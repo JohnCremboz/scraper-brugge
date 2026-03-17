@@ -158,7 +158,7 @@ def verwerk_vergadering(meeting: dict, output_pad: Path,
         naam_hint = sanitize_filename(doc["naam"])
         succes = download_document(doc["url"], bestemming, naam_hint)
         if succes:
-            print(f"      [✓] {naam_hint[:70]}")
+            print(f"      [OK] {naam_hint[:70]}")
         return succes
 
     # Documenten van de vergaderingspagina (agenda, besluitenlijst, notulen, ...)
@@ -373,10 +373,12 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
         maand_label = f"{jaar}/{maand:02d}"
         print(f"  [{maand_label}] {len(nieuw)} vergadering(en) te verwerken")
 
-        for meeting in nieuw:
+        for idx, meeting in enumerate(nieuw, 1):
+            print(f"    ({idx}/{len(nieuw)}) verwerken...", end="", flush=True)
             n = verwerk_vergadering(
                 meeting, output_pad, ook_agendapunten, document_filter
             )
+            print(f" -> {n} PDF(s)")
             totaal_downloads += n
             if n > 0:
                 vergaderingen_met_docs += 1

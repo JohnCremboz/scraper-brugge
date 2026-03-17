@@ -36,6 +36,11 @@ DEDICATED: dict[str, dict] = {
         "heeft_browser": True,
         "heeft_agendapunten": True,
     },
+    "Ingelmunster": {
+        "script": "scraper_ingelmunster.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -55,6 +60,16 @@ STIJL = Style([
 
 console = Console()
 SCRIPT_DIR = Path(__file__).parent
+
+
+def is_no_console_error(exc: BaseException) -> bool:
+    """Detecteer prompt_toolkit NoConsoleScreenBufferError via de exception-chain."""
+    huidig: BaseException | None = exc
+    while huidig is not None:
+        if huidig.__class__.__name__ == "NoConsoleScreenBufferError":
+            return True
+        huidig = huidig.__cause__ or huidig.__context__
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +334,8 @@ def stap_orgaan(gemeente: dict) -> str | None:
         return antwoord.strip() if antwoord and antwoord.strip() else None
 
 
-def stap_maanden() -> int:
+def stap_maanden(orgaan: str | None = None) -> int:
+    standaard = 36 if orgaan and "gemeenteraad" in orgaan.lower() else 12
     keuze = questionary.select(
         "Hoeveel maanden terug wilt u zoeken?",
         choices=[
@@ -331,13 +347,14 @@ def stap_maanden() -> int:
             questionary.Choice("36 maanden (3 jaar)",    value=36),
             questionary.Choice("Alle beschikbare data",  value=999),
         ],
-        default=questionary.Choice("12 maanden (1 jaar)", value=12),
+        default=standaard,
         style=STIJL,
     ).ask()
     return keuze
 
 
-def stap_doc_filter() -> str | None:
+def stap_doc_filter(orgaan: str | None = None) -> str | None:
+    standaard = "notulen" if orgaan and "gemeenteraad" in orgaan.lower() else None
     keuze = questionary.select(
         "Wilt u alleen bepaalde documenten downloaden?",
         choices=[
@@ -347,6 +364,7 @@ def stap_doc_filter() -> str | None:
             questionary.Choice("Alleen besluitenlijsten",            value="besluitenlijst"),
             questionary.Choice("Aangepast filter…",                 value="__custom__"),
         ],
+        default=standaard,
         style=STIJL,
     ).ask()
 
@@ -493,11 +511,11 @@ def wizard_scrapen(alle_gemeenten: list[dict]):
     console.print()
 
     # 3. Periode
-    maanden = stap_maanden()
+    maanden = stap_maanden(orgaan)
     console.print()
 
     # 4. Documentfilter
-    doc_filter = stap_doc_filter()
+    doc_filter = stap_doc_filter(orgaan)
     console.print()
 
     # 5. Agendapunten
@@ -558,3 +576,18 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, EOFError):
         console.print("\n[dim]Gestopt.[/dim]\n")
         sys.exit(0)
+    except Exception as e:
+        if is_no_console_error(e):
+            console.print()
+            console.print(Panel(
+                "[bold yellow]Geen compatibele Windows-console gedetecteerd.[/bold yellow]\n\n"
+                "Deze interactieve TUI gebruikt `questionary`/`prompt_toolkit` en werkt op Windows "
+                "alleen in een echte terminal (cmd/PowerShell/Windows Terminal).\n\n"
+                "Probeer:\n"
+                "- Starten vanuit een terminal: [bold]uv run python start.py[/bold]\n"
+                "- In PyCharm: schakel [italic]Emulate terminal in output console[/italic] in",
+                border_style="yellow",
+                title="Console vereist",
+            ))
+            sys.exit(1)
+        raise

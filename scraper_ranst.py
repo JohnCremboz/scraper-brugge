@@ -307,7 +307,7 @@ def verwerk_vergadering(
         gebruikte_namen.add(naam_hint)
         succes = download_document(doc["url"], bestemming, naam_hint)
         if succes:
-            print(f"      [✓] {naam_hint[:70]}")
+            print(f"      [OK] {naam_hint[:70]}")
         return succes
 
     # Vergaderingspagina zelf + subpagina's
@@ -497,12 +497,12 @@ def scrape(
 
     for org in te_verwerken:
         print(f"\n[Orgaan] {org['naam']}  (/{org['slug']})")
-        print(f"  Vergaderingen ophalen...")
+        print(f"  (vergaderingen ophalen...)")
 
         vergadering_items = haal_vergadering_links(org["slug"])
         print(f"  {len(vergadering_items)} vergaderingen gevonden\n")
 
-        for item in tqdm(vergadering_items, desc=f"  {org['naam'][:30]}", unit="verg"):
+        for idx, item in enumerate(tqdm(vergadering_items, desc=f"  {org['naam'][:30]}", unit="verg"), 1):
             verg_url = item["url"]
             titel = item["titel"]
 

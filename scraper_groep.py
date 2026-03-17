@@ -6,6 +6,7 @@ Ondersteunde types:
   smartcities      raadpleeg-*.onlinesmartcities.be · besluitvorming.*.be  (Playwright)
   cipalschaubroeck *-echo.cipalschaubroeck.be/raadpleegomgeving · *.csecho.be  (REST API)
   meetingburger    *.meetingburger.net                                      (REST)
+  ingelmunster     www.ingelmunster.be/db_files_2                            (HTML/PDF links)
   lblod            lblod.*.be                                               (geen scraper)
   overig           Andere bekende sites                                     (handmatig)
   leeg             Geen URL beschikbaar
@@ -71,10 +72,18 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": False,
         "kleur": "blue",
     },
+    "ingelmunster": {
+        "label": "Ingelmunster bekendmakingen",
+        "beschrijving": "www.ingelmunster.be/db_files_2",
+        "scraper": "scraper_ingelmunster.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_blue",
+    },
     "lblod": {
         "label": "LBLOD / Linked Open Data",
-        "beschrijving": "lblod.*.be",
-        "scraper": None,
+        "beschrijving": "lblod.*.be — LBLODWeb publicatieportaal",
+        "scraper": "scraper_lblod.py",
         "heeft_browser": False,
         "heeft_agendapunten": False,
         "kleur": "magenta",
@@ -126,6 +135,8 @@ def detecteer_type(url: str) -> str:
         return "cipalschaubroeck"
     if "meetingburger.net" in u:
         return "meetingburger"
+    if "www.ingelmunster.be/db_files_2" in u:
+        return "ingelmunster"
     if re.search(r"\blblod\.", u):
         return "lblod"
     return "overig"
@@ -268,7 +279,7 @@ def scrape_batch(
 
         if cmd is None:
             console.print(
-                f"  [yellow]⚠ Type '{type_}' heeft geen scraper — overgeslagen.[/yellow]"
+                f"  [yellow][!] Type '{type_}' heeft geen scraper -- overgeslagen.[/yellow]"
             )
             overgeslagen += 1
             continue
@@ -292,10 +303,10 @@ def scrape_batch(
             if proc.returncode == 0:
                 geslaagd += 1
             else:
-                console.print(f"  [red]✗ Exitcode {proc.returncode}[/red]")
+                console.print(f"  [red][FOUT] Exitcode {proc.returncode}[/red]")
                 mislukt += 1
         except Exception as e:
-            console.print(f"  [red]✗ Fout bij starten scraper: {e}[/red]")
+            console.print(f"  [red][FOUT] Bij starten scraper: {e}[/red]")
             mislukt += 1
 
         if idx < totaal:
@@ -334,7 +345,7 @@ def toon_groepen(gemeenten: list[dict]) -> None:
 
         kleur = config["kleur"]
         scraper_label = (
-            f"[green]✓ {config['scraper']}[/green]"
+            f"[green][OK] {config['scraper']}[/green]"
             if config["scraper"]
             else "[red]geen scraper[/red]"
         )
@@ -425,27 +436,17 @@ def tui_main(gemeenten: list[dict]) -> None:
     else:
         te_verwerken = leden
 
-    # ── Maanden ───────────────────────────────────────────────────────────
-    maanden_str = questionary.text(
-        "Hoeveel maanden terugzoeken?",
-        default="12",
-        style=STIJL,
-    ).ask()
-    try:
-        maanden = max(1, int(maanden_str or "12"))
-    except ValueError:
-        maanden = 12
-
     # ── Orgaan ───────────────────────────────────────────────────────────
     orgaan_keuze = questionary.select(
         "Orgaan filteren?",
         choices=[
-            questionary.Choice("Alle organen (geen filter)", None),
             questionary.Choice("Gemeenteraad", "Gemeenteraad"),
+            questionary.Choice("Alle organen (geen filter)", None),
             questionary.Choice("College van burgemeester en schepenen",
                                "College van burgemeester en schepenen"),
             questionary.Choice("Zelf invoeren…", "__invoer__"),
         ],
+        default="Gemeenteraad",
         style=STIJL,
     ).ask()
 
@@ -453,6 +454,18 @@ def tui_main(gemeenten: list[dict]) -> None:
         orgaan = questionary.text("Orgaannaam:", style=STIJL).ask() or None
     else:
         orgaan = orgaan_keuze
+
+    # ── Maanden ───────────────────────────────────────────────────────────
+    standaard_maanden = "36" if orgaan and "gemeenteraad" in orgaan.lower() else "12"
+    maanden_str = questionary.text(
+        "Hoeveel maanden terugzoeken?",
+        default=standaard_maanden,
+        style=STIJL,
+    ).ask()
+    try:
+        maanden = max(1, int(maanden_str or standaard_maanden))
+    except ValueError:
+        maanden = int(standaard_maanden)
 
     # ── Uitvoermap ────────────────────────────────────────────────────────
     output = questionary.text(
@@ -465,10 +478,11 @@ def tui_main(gemeenten: list[dict]) -> None:
     doc_filter_keuze = questionary.select(
         "Documentfilter?",
         choices=[
-            questionary.Choice("Geen (alle documenten)", None),
             questionary.Choice("Alleen notulen", "notulen"),
+            questionary.Choice("Geen (alle documenten)", None),
             questionary.Choice("Zelf invoeren…", "__invoer__"),
         ],
+        default="notulen" if orgaan and "gemeenteraad" in orgaan.lower() else None,
         style=STIJL,
     ).ask()
 
@@ -535,7 +549,8 @@ Websitetypes:
   smartcities      raadpleeg-*.onlinesmartcities.be + besluitvorming.*.be
   cipalschaubroeck *-echo.cipalschaubroeck.be/raadpleegomgeving + *.csecho.be
   meetingburger    *.meetingburger.net
-  lblod            lblod.*.be  (geen scraper beschikbaar)
+  ingelmunster     www.ingelmunster.be/db_files_2
+  lblod            lblod.*.be — LBLODWeb publicatieportaal
   overig           Andere sites (geen scraper beschikbaar)
 
 Voorbeelden:
