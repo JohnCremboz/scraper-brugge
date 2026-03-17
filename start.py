@@ -5,6 +5,7 @@ Gebruik:
     uv run python start.py
 """
 
+import importlib.util
 import subprocess
 import sys
 import time
@@ -18,40 +19,22 @@ from rich.rule import Rule
 from rich.table import Table
 from rich import box
 
+from scraper_groep import detecteer_type, extraheer_base_url, lees_csv, TYPES
+
 # ---------------------------------------------------------------------------
-# Configuratie per gemeente/stad
+# Gemeenten met een eigen dedicated scraper (geen --base-url nodig)
 # ---------------------------------------------------------------------------
 
-STEDEN = {
+DEDICATED: dict[str, dict] = {
     "Brugge": {
         "script": "scraper.py",
-        "site": "besluitvorming.brugge.be",
-        "output_standaard": "pdfs_brugge",
         "heeft_browser": True,
-    },
-    "Halle": {
-        "script": "scraper_halle.py",
-        "site": "raadpleeg-halle.onlinesmartcities.be",
-        "output_standaard": "pdfs_halle",
-        "heeft_browser": True,
+        "heeft_agendapunten": True,
     },
     "Leuven": {
         "script": "scraper_leuven.py",
-        "site": "besluitvorming.leuven.be",
-        "output_standaard": "pdfs_leuven",
         "heeft_browser": True,
-    },
-    "Menen": {
-        "script": "scraper_menen.py",
-        "site": "menen-echo.cipalschaubroeck.be",
-        "output_standaard": "pdfs_menen",
-        "heeft_browser": False,
-    },
-    "Ranst": {
-        "script": "scraper_ranst.py",
-        "site": "ranst.meetingburger.net",
-        "output_standaard": "pdfs_ranst",
-        "heeft_browser": False,
+        "heeft_agendapunten": True,
     },
 }
 
@@ -71,7 +54,6 @@ STIJL = Style([
 ])
 
 console = Console()
-
 SCRIPT_DIR = Path(__file__).parent
 
 
@@ -90,49 +72,48 @@ def banner():
     console.print()
 
 
-def toon_overzicht(stad: str, orgaan: str | None, maanden: int,
-                   output: str, doc_filter: str | None,
-                   agendapunten: bool):
-    tabel = Table(box=box.ROUNDED, border_style="dim", show_header=False, padding=(0, 1))
-    tabel.add_column("Instelling", style="dim")
-    tabel.add_column("Waarde", style="bold")
-
-    tabel.add_row("Gemeente / Stad", stad)
-    tabel.add_row("Orgaan", orgaan or "[dim]Alle organen[/dim]")
-    tabel.add_row("Periode", f"Laatste {maanden} maand(en)")
-    tabel.add_row("Uitvoermap", output)
-    tabel.add_row("Documentfilter", doc_filter or "[dim]Geen (alle documenten)[/dim]")
-    tabel.add_row("Individuele besluiten", "Ja" if agendapunten else "Nee")
-
-    console.print(Panel(tabel, title="[bold]Overzicht instellingen[/bold]", border_style="cyan"))
-    console.print()
+def scraper_info(gemeente: dict) -> tuple[str | None, bool, bool]:
+    """Geef (script, heeft_browser, heeft_agendapunten) terug voor een gemeente."""
+    naam = gemeente["gemeente"]
+    if naam in DEDICATED:
+        d = DEDICATED[naam]
+        return d["script"], d["heeft_browser"], d["heeft_agendapunten"]
+    config = TYPES.get(gemeente["type"], {})
+    scraper = config.get("scraper")
+    return scraper, config.get("heeft_browser", False), config.get("heeft_agendapunten", False)
 
 
-def haal_organen(script: str) -> list[str] | None:
-    """Roep --lijst-organen op en geef de namen terug."""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "uv", "run", "python", script, "--lijst-organen"],
-            capture_output=True, text=True, cwd=SCRIPT_DIR, timeout=30
-        )
-        organen = []
-        for regel in result.stdout.splitlines():
-            regel = regel.strip()
-            if regel.startswith("- "):
-                organen.append(regel[2:].strip())
-        return organen if organen else None
-    except Exception:
-        return None
+def haal_organen_direct(gemeente: dict) -> list[str] | None:
+    """Haal organen op door het scraper-module direct te laden (zonder subprocess)."""
+    naam = gemeente["gemeente"]
+    if naam in DEDICATED:
+        script = DEDICATED[naam]["script"]
+        base_url = None
+    else:
+        script = TYPES.get(gemeente["type"], {}).get("scraper")
+        if script is None:
+            return None
+        base_url = gemeente.get("base_url", "")
 
-
-def haal_organen_direct(script: str) -> list[str] | None:
-    """Haal organen op door het scraper-script direct te importeren."""
-    import importlib.util
     pad = SCRIPT_DIR / script
     try:
         spec = importlib.util.spec_from_file_location("_scraper_tmp", pad)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+
+        # Patch BASE_URL zodat de module de juiste gemeente bevraagt
+        if base_url and hasattr(mod, "BASE_URL"):
+            mod.BASE_URL = base_url
+            if hasattr(mod, "KALENDER_URL"):
+                mod.KALENDER_URL = f"{base_url}/zittingen/kalender"
+            if hasattr(mod, "CONTEXT"):
+                context = mod.CONTEXT
+                if hasattr(mod, "LIJST_URL"):
+                    mod.LIJST_URL = f"{base_url}{context}/zittingen/lijst"
+                if hasattr(mod, "KALENDER_API"):
+                    mod.KALENDER_API = f"{base_url}{context}/calendar/fetchcalendar"
+                if hasattr(mod, "ZOEKEN_URL"):
+                    mod.ZOEKEN_URL = f"{base_url}{context}/zoeken"
 
         if hasattr(mod, "haal_organen_statisch"):
             organen = mod.haal_organen_statisch()
@@ -142,30 +123,30 @@ def haal_organen_direct(script: str) -> list[str] | None:
                 mod.init_session()
             organen = mod.haal_organen()
             return [o["naam"] for o in organen] if organen else None
-        elif hasattr(mod, "toon_organen"):
-            # Playwright-gebaseerd: gebruik subprocess
-            return None
     except Exception:
         pass
     return None
 
 
-def laad_organen(stad: str) -> list[str] | None:
-    """Laad orgaannamen voor de gekozen stad. Geeft None terug bij fout."""
-    script = STEDEN[stad]["script"]
-    with console.status("[cyan]Organen ophalen van de website...[/cyan]", spinner="dots"):
-        organen = haal_organen_direct(script)
-        if not organen:
-            organen = haal_organen(script)
-    return organen
+def bouw_commando(
+    gemeente: dict,
+    orgaan: str | None,
+    maanden: int,
+    output: str,
+    doc_filter: str | None,
+    agendapunten: bool,
+    zichtbaar: bool,
+) -> list[str] | None:
+    """Stel het subproces-commando samen voor een gemeente."""
+    script, heeft_browser, heeft_agendapunten = scraper_info(gemeente)
+    if script is None:
+        return None
 
-
-def bouw_commando(stad: str, orgaan: str | None, maanden: int,
-                  output: str, doc_filter: str | None,
-                  agendapunten: bool, zichtbaar: bool) -> list[str]:
-    """Stel het subproces-commando samen."""
-    script = STEDEN[stad]["script"]
     cmd = ["uv", "run", "python", script]
+
+    # Dedicated scrapers hebben hun URL al ingebakken
+    if gemeente["gemeente"] not in DEDICATED:
+        cmd += ["--base-url", gemeente["base_url"]]
 
     if orgaan:
         cmd += ["--orgaan", orgaan]
@@ -177,12 +158,35 @@ def bouw_commando(stad: str, orgaan: str | None, maanden: int,
 
     if doc_filter:
         cmd += ["--document-filter", doc_filter]
-    if agendapunten:
+    if agendapunten and heeft_agendapunten:
         cmd += ["--agendapunten"]
-    if zichtbaar and STEDEN[stad]["heeft_browser"]:
+    if zichtbaar and heeft_browser:
         cmd += ["--zichtbaar"]
 
     return cmd
+
+
+def toon_overzicht(gemeente: dict, orgaan: str | None, maanden: int,
+                   output: str, doc_filter: str | None, agendapunten: bool):
+    script, _, _ = scraper_info(gemeente)
+    type_label = TYPES.get(gemeente["type"], {}).get("label", gemeente["type"])
+
+    tabel = Table(box=box.ROUNDED, border_style="dim", show_header=False, padding=(0, 1))
+    tabel.add_column("Instelling", style="dim")
+    tabel.add_column("Waarde", style="bold")
+
+    tabel.add_row("Gemeente / Stad", gemeente["gemeente"])
+    tabel.add_row("Website", gemeente.get("url") or "[dim]—[/dim]")
+    tabel.add_row("Type", type_label)
+    tabel.add_row("Scraper", script or "[red]geen scraper beschikbaar[/red]")
+    tabel.add_row("Orgaan", orgaan or "[dim]Alle organen[/dim]")
+    tabel.add_row("Periode", f"Laatste {maanden} maand(en)")
+    tabel.add_row("Uitvoermap", output)
+    tabel.add_row("Documentfilter", doc_filter or "[dim]Geen (alle documenten)[/dim]")
+    tabel.add_row("Individuele besluiten", "Ja" if agendapunten else "Nee")
+
+    console.print(Panel(tabel, title="[bold]Overzicht instellingen[/bold]", border_style="cyan"))
+    console.print()
 
 
 def voer_uit(cmd: list[str]):
@@ -199,8 +203,9 @@ def voer_uit(cmd: list[str]):
             text=True,
             encoding="utf-8",
             errors="replace",
-            cwd=SCRIPT_DIR,
+            cwd=str(SCRIPT_DIR),
         )
+        assert proc.stdout is not None
         for regel in proc.stdout:
             console.print(regel, end="")
         proc.wait()
@@ -226,24 +231,71 @@ def voer_uit(cmd: list[str]):
 # Wizard-stappen
 # ---------------------------------------------------------------------------
 
-def stap_stad() -> str | None:
-    keuze = questionary.select(
-        "Welke gemeente of stad wilt u doorzoeken?",
-        choices=[
-            questionary.Choice(f"{naam}  ({info['site']})", value=naam)
-            for naam, info in STEDEN.items()
-        ] + [questionary.Choice("── Terug naar hoofdmenu", value="__terug__")],
+def stap_gemeente(alle_gemeenten: list[dict]) -> dict | None:
+    """
+    Laat de gebruiker een gemeente kiezen.
+    Dedicated scrapers staan bovenaan; de rest is doorzoekbaar via autocomplete.
+    """
+    ded_namen = set(DEDICATED.keys())
+
+    # Dedicated gemeenten als vaste keuzelijst bovenaan
+    ded_keuzes = [
+        questionary.Choice(
+            title=f"{naam}  [dedicated scraper]",
+            value=next(
+                (g for g in alle_gemeenten if g["gemeente"] == naam),
+                {"gemeente": naam, "url": "", "type": "smartcities", "base_url": ""},
+            ),
+        )
+        for naam in DEDICATED
+    ]
+
+    # Alle overige gemeenten als autocomplete-lijst
+    overige = sorted(
+        [g for g in alle_gemeenten if g["gemeente"] not in ded_namen],
+        key=lambda g: g["gemeente"],
+    )
+    naam_naar_gemeente = {g["gemeente"]: g for g in overige}
+
+    # ── Keuzemenu: dedicated of zoeken ──────────────────────────────────
+    eerste_keuze = questionary.select(
+        "Gemeente kiezen:",
+        choices=ded_keuzes + [
+            questionary.Separator(),
+            questionary.Choice("Zoek een andere gemeente…", value="__zoek__"),
+            questionary.Choice("── Terug", value=None),
+        ],
         style=STIJL,
         use_shortcuts=False,
     ).ask()
-    if keuze in (None, "__terug__"):
+
+    if eerste_keuze is None:
         return None
-    return keuze
+    if eerste_keuze != "__zoek__":
+        return eerste_keuze  # Dedicated gemeente gekozen
+
+    # ── Autocomplete-zoekveld ────────────────────────────────────────────
+    namen = [g["gemeente"] for g in overige]
+    gekozen_naam = questionary.autocomplete(
+        "Typ (deel van) de gemeentenaam:",
+        choices=namen,
+        style=STIJL,
+        validate=lambda v: v in naam_naar_gemeente or "Kies een gemeente uit de lijst.",
+    ).ask()
+
+    if not gekozen_naam:
+        return None
+    return naam_naar_gemeente.get(gekozen_naam)
 
 
-def stap_orgaan(stad: str) -> str | None:
+def stap_orgaan(gemeente: dict) -> str | None:
     """Vraag welk orgaan. Geeft None terug = alle organen."""
-    organen = laad_organen(stad)
+    script, _, _ = scraper_info(gemeente)
+    if script is None:
+        return None
+
+    with console.status("[cyan]Organen ophalen van de website...[/cyan]", spinner="dots"):
+        organen = haal_organen_direct(gemeente)
 
     if organen:
         keuzes = (
@@ -271,13 +323,13 @@ def stap_maanden() -> int:
     keuze = questionary.select(
         "Hoeveel maanden terug wilt u zoeken?",
         choices=[
-            questionary.Choice("1 maand",   value=1),
-            questionary.Choice("3 maanden", value=3),
-            questionary.Choice("6 maanden", value=6),
-            questionary.Choice("12 maanden (1 jaar)",  value=12),
-            questionary.Choice("24 maanden (2 jaar)",  value=24),
-            questionary.Choice("36 maanden (3 jaar)",  value=36),
-            questionary.Choice("Alle beschikbare data", value=999),
+            questionary.Choice("1 maand",               value=1),
+            questionary.Choice("3 maanden",              value=3),
+            questionary.Choice("6 maanden",              value=6),
+            questionary.Choice("12 maanden (1 jaar)",    value=12),
+            questionary.Choice("24 maanden (2 jaar)",    value=24),
+            questionary.Choice("36 maanden (3 jaar)",    value=36),
+            questionary.Choice("Alle beschikbare data",  value=999),
         ],
         default=questionary.Choice("12 maanden (1 jaar)", value=12),
         style=STIJL,
@@ -289,11 +341,11 @@ def stap_doc_filter() -> str | None:
     keuze = questionary.select(
         "Wilt u alleen bepaalde documenten downloaden?",
         choices=[
-            questionary.Choice("Alle documenten",                  value=None),
+            questionary.Choice("Alle documenten",                    value=None),
             questionary.Choice("Alleen notulen / zittingsverslagen", value="notulen"),
-            questionary.Choice("Alleen agenda's",                  value="agenda"),
-            questionary.Choice("Alleen besluitenlijsten",          value="besluitenlijst"),
-            questionary.Choice("Aangepast filter…",               value="__custom__"),
+            questionary.Choice("Alleen agenda's",                    value="agenda"),
+            questionary.Choice("Alleen besluitenlijsten",            value="besluitenlijst"),
+            questionary.Choice("Aangepast filter…",                 value="__custom__"),
         ],
         style=STIJL,
     ).ask()
@@ -308,7 +360,10 @@ def stap_doc_filter() -> str | None:
     return keuze
 
 
-def stap_agendapunten() -> bool:
+def stap_agendapunten(gemeente: dict) -> bool:
+    _, _, heeft_agendapunten = scraper_info(gemeente)
+    if not heeft_agendapunten:
+        return False
     return questionary.confirm(
         "Ook individuele agendapuntbesluiten downloaden? (trager)",
         default=False,
@@ -316,8 +371,10 @@ def stap_agendapunten() -> bool:
     ).ask()
 
 
-def stap_output(stad: str, orgaan: str | None) -> str:
-    standaard = STEDEN[stad]["output_standaard"]
+def stap_output(gemeente: dict, orgaan: str | None) -> str:
+    slug = gemeente["gemeente"].lower().replace(" ", "_").replace("/", "_")
+    slug = slug[:30]
+    standaard = f"pdfs/{slug}"
     if orgaan:
         veilig = orgaan.lower().replace(" ", "_").replace("/", "_")[:20]
         standaard = f"{standaard}/{veilig}"
@@ -330,23 +387,13 @@ def stap_output(stad: str, orgaan: str | None) -> str:
     return antwoord.strip() if antwoord and antwoord.strip() else standaard
 
 
-def stap_zichtbaar(stad: str) -> bool:
-    if not STEDEN[stad]["heeft_browser"]:
+def stap_zichtbaar(gemeente: dict) -> bool:
+    _, heeft_browser, _ = scraper_info(gemeente)
+    if not heeft_browser:
         return False
     return questionary.confirm(
         "Browser zichtbaar maken? (handig bij problemen, maar trager)",
         default=False,
-        style=STIJL,
-    ).ask()
-
-
-def stap_bevestiging(stad: str, orgaan: str | None, maanden: int,
-                     output: str, doc_filter: str | None,
-                     agendapunten: bool) -> bool:
-    toon_overzicht(stad, orgaan, maanden, output, doc_filter, agendapunten)
-    return questionary.confirm(
-        "Alles klopt? Scraper starten?",
-        default=True,
         style=STIJL,
     ).ask()
 
@@ -356,15 +403,18 @@ def stap_bevestiging(stad: str, orgaan: str | None, maanden: int,
 # ---------------------------------------------------------------------------
 
 def hoofdmenu():
+    alle_gemeenten = lees_csv()
+
     while True:
         banner()
 
         keuze = questionary.select(
             "Wat wilt u doen?",
             choices=[
-                questionary.Choice("📥  Documenten downloaden",         value="scrapen"),
-                questionary.Choice("📋  Beschikbare organen bekijken",  value="organen"),
-                questionary.Choice("🚪  Afsluiten",                     value="afsluiten"),
+                questionary.Choice("📥  Enkele gemeente scrapen",          value="scrapen"),
+                questionary.Choice("📦  Batch scrapen per websitetype",    value="batch"),
+                questionary.Choice("📋  Beschikbare organen bekijken",     value="organen"),
+                questionary.Choice("🚪  Afsluiten",                        value="afsluiten"),
             ],
             style=STIJL,
             use_shortcuts=False,
@@ -375,49 +425,71 @@ def hoofdmenu():
             break
 
         elif keuze == "organen":
-            menu_organen()
+            menu_organen(alle_gemeenten)
 
         elif keuze == "scrapen":
-            wizard_scrapen()
+            wizard_scrapen(alle_gemeenten)
+
+        elif keuze == "batch":
+            wizard_batch()
 
 
-def menu_organen():
+def menu_organen(alle_gemeenten: list[dict]):
     console.print()
-    stad = stap_stad()
-    if stad is None:
+    gemeente = stap_gemeente(alle_gemeenten)
+    if gemeente is None:
         return
 
+    script, _, _ = scraper_info(gemeente)
     console.print()
-    organen = laad_organen(stad)
-    if organen:
-        tabel = Table(
-            title=f"Organen — {stad}",
-            box=box.ROUNDED,
-            border_style="cyan",
-            show_header=False,
-        )
-        tabel.add_column("Orgaan", style="bold")
-        for o in organen:
-            tabel.add_row(o)
-        console.print(tabel)
+
+    if script is None:
+        console.print(f"[yellow]Geen scraper beschikbaar voor {gemeente['gemeente']} "
+                      f"({TYPES.get(gemeente['type'], {}).get('label', '?')}).[/yellow]")
     else:
-        console.print(f"[yellow]Kon geen organen ophalen voor {stad}.[/yellow]")
+        with console.status("[cyan]Organen ophalen...[/cyan]", spinner="dots"):
+            organen = haal_organen_direct(gemeente)
+        if organen:
+            tabel = Table(
+                title=f"Organen — {gemeente['gemeente']}",
+                box=box.ROUNDED,
+                border_style="cyan",
+                show_header=False,
+            )
+            tabel.add_column("Orgaan", style="bold")
+            for o in organen:
+                tabel.add_row(o)
+            console.print(tabel)
+        else:
+            console.print(f"[yellow]Kon geen organen ophalen voor {gemeente['gemeente']}.[/yellow]")
+            console.print("[dim]Playwright-gebaseerde scrapers vereisen een browser. "
+                          "Gebruik --lijst-organen vanuit de terminal.[/dim]")
 
     console.print()
     questionary.press_any_key_to_continue("Druk op een toets om terug te gaan...").ask()
 
 
-def wizard_scrapen():
+def wizard_scrapen(alle_gemeenten: list[dict]):
     console.print()
 
-    # 1. Stad
-    stad = stap_stad()
-    if stad is None:
+    # 1. Gemeente
+    gemeente = stap_gemeente(alle_gemeenten)
+    if gemeente is None:
         return
+
+    script, _, _ = scraper_info(gemeente)
+    if script is None:
+        console.print(
+            f"\n[yellow]⚠  Geen scraper beschikbaar voor {gemeente['gemeente']} "
+            f"(type: {TYPES.get(gemeente['type'], {}).get('label', gemeente['type'])}).[/yellow]\n"
+        )
+        questionary.press_any_key_to_continue("Druk op een toets...").ask()
+        return
+
     console.print()
 
     # 2. Orgaan
-    orgaan = stap_orgaan(stad)
+    orgaan = stap_orgaan(gemeente)
     console.print()
 
     # 3. Periode
@@ -429,29 +501,49 @@ def wizard_scrapen():
     console.print()
 
     # 5. Agendapunten
-    agendapunten = stap_agendapunten()
+    agendapunten = stap_agendapunten(gemeente)
     console.print()
 
     # 6. Uitvoermap
-    output = stap_output(stad, orgaan)
+    output = stap_output(gemeente, orgaan)
     console.print()
 
     # 7. Browser zichtbaar (alleen voor Playwright-scrapers)
-    zichtbaar = stap_zichtbaar(stad)
+    zichtbaar = stap_zichtbaar(gemeente)
     if zichtbaar:
         console.print()
 
     # 8. Bevestiging
-    if not stap_bevestiging(stad, orgaan, maanden, output, doc_filter, agendapunten):
+    toon_overzicht(gemeente, orgaan, maanden, output, doc_filter, agendapunten)
+    if not questionary.confirm("Alles klopt? Scraper starten?", default=True, style=STIJL).ask():
         console.print("[yellow]Geannuleerd.[/yellow]\n")
         return
 
     console.print()
 
     # 9. Uitvoeren
-    cmd = bouw_commando(stad, orgaan, maanden, output, doc_filter, agendapunten, zichtbaar)
-    voer_uit(cmd)
+    cmd = bouw_commando(gemeente, orgaan, maanden, output, doc_filter, agendapunten, zichtbaar)
+    if cmd:
+        voer_uit(cmd)
 
+    console.print()
+    questionary.press_any_key_to_continue("Druk op een toets om terug te gaan naar het hoofdmenu...").ask()
+
+
+def wizard_batch():
+    """Start de interactieve TUI van scraper_groep.py als subproces."""
+    console.print()
+    console.print(Rule("[bold cyan]Batch scrapen[/bold cyan]", style="cyan"))
+    console.print("[dim]scraper_groep.py wordt gestart...[/dim]\n")
+    try:
+        subprocess.run(
+            ["uv", "run", "python", "scraper_groep.py"],
+            cwd=str(SCRIPT_DIR),
+        )
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        console.print(f"[red]Fout bij starten van scraper_groep.py: {e}[/red]")
     console.print()
     questionary.press_any_key_to_continue("Druk op een toets om terug te gaan naar het hoofdmenu...").ask()
 
