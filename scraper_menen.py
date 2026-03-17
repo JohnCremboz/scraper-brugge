@@ -10,16 +10,28 @@ Gebruik:
 """
 
 import argparse
+import logging
 import re
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from dateutil.relativedelta import relativedelta
 from tqdm import tqdm
+
+from base_scraper import (
+    ScraperConfig,
+    create_session,
+    sanitize_filename,
+    safe_output_path,
+    download_document as base_download_document,
+    DownloadResult,
+    logger,
+)
 
 BASE_URL = "https://menen-echo.cipalschaubroeck.be"
 CONTEXT = "/raadpleegomgeving"
@@ -27,80 +39,42 @@ LIJST_URL = f"{BASE_URL}{CONTEXT}/zittingen/lijst"
 KALENDER_API = f"{BASE_URL}{CONTEXT}/calendar/fetchcalendar"
 ZOEKEN_URL = f"{BASE_URL}{CONTEXT}/zoeken"
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
-})
+# Scraper configuratie (wordt ingesteld in main())
+_config: ScraperConfig | None = None
+SESSION: requests.Session | None = None
 
 
 def init_session():
-    """Initialiseer de sessie door de lijstpagina te bezoeken (JSESSIONID ophalen)."""
+    """Initialiseer de sessie met rate limiting en retries."""
+    global SESSION, _config
+    if _config is None:
+        _config = ScraperConfig(base_url=BASE_URL)
+    SESSION = create_session(_config)
     try:
         SESSION.get(LIJST_URL, timeout=15)
     except Exception as e:
-        print(f"[!] Sessie-initialisatie mislukt: {e}")
-
-
-def sanitize_filename(name: str) -> str:
-    """Verwijder ongeldige tekens uit bestandsnamen."""
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
-    name = re.sub(r'_+', '_', name)
-    name = name.strip("_. ")
-    return name[:180] if len(name) > 180 else name or "document"
+        logger.warning("Sessie-initialisatie mislukt: %s", e)
 
 
 def download_document(doc_url: str, bestemming: Path, filename_hint: str = "") -> bool:
-    """Download een /document/{id} URL als PDF."""
-    full_url = urljoin(BASE_URL, doc_url) if not doc_url.startswith("http") else doc_url
-    try:
-        resp = SESSION.get(full_url, stream=True, timeout=60, allow_redirects=True)
-        if resp.status_code != 200:
-            return False
-
-        # Bepaal bestandsnaam vanuit Content-Disposition
-        cd = resp.headers.get("content-disposition", "")
-        naam = ""
-        if "filename=" in cd:
-            match = re.search(r'filename=["\']?([^"\';\n]+)', cd)
-            if match:
-                naam = match.group(1).strip().strip('"\'')
-
-        if not naam:
-            naam = filename_hint or doc_url.split("/")[-1]
-
-        if not naam.lower().endswith(".pdf"):
-            naam += ".pdf"
-
-        naam = sanitize_filename(naam)
-        bestemming_pad = bestemming / naam
-
-        # Overgeslagen als al bestaat
-        if bestemming_pad.exists():
-            return True
-
-        # Lees chunks, controleer op PDF header
-        eerste_chunk = None
-        chunks = []
-        for chunk in resp.iter_content(8192):
-            if chunk:
-                if eerste_chunk is None:
-                    eerste_chunk = chunk
-                    if not chunk.startswith(b"%PDF"):
-                        return False  # Geen PDF
-                chunks.append(chunk)
-
-        if not chunks:
-            return False
-
-        with open(bestemming_pad, "wb") as f:
-            for chunk in chunks:
-                f.write(chunk)
-
-        return True
-
-    except Exception as e:
-        print(f"      [!] Download fout {full_url}: {type(e).__name__}: {e}")
+    """Download een /document/{id} URL als PDF via base_scraper."""
+    if SESSION is None or _config is None:
+        logger.error("Sessie niet geïnitialiseerd")
         return False
+    
+    result = base_download_document(
+        session=SESSION,
+        config=_config,
+        doc_url=doc_url,
+        output_dir=bestemming,
+        filename_hint=filename_hint,
+        require_pdf=True,
+    )
+    
+    if not result.success and result.error:
+        logger.debug("Download fout %s: %s", doc_url, result.error)
+    
+    return result.success
 
 
 def haal_document_links_van_pagina(url: str) -> list[dict]:
@@ -317,13 +291,8 @@ def toon_organen():
 
 def bereken_start_datum(maanden: int) -> str:
     """Bereken de startdatum (YYYYMM) voor het opgegeven aantal maanden geleden."""
-    nu = datetime.now()
-    maand = nu.month - maanden
-    jaar = nu.year
-    while maand <= 0:
-        maand += 12
-        jaar -= 1
-    return f"{jaar}{maand:02d}"
+    start = datetime.now() - relativedelta(months=maanden)
+    return f"{start.year}{start.month:02d}"
 
 
 def scrape(orgaan: str | None, output_map: str, maanden: int,
@@ -458,18 +427,20 @@ Voorbeelden:
 
     args = parser.parse_args()
 
+    # Configureer URL's
+    global BASE_URL, CONTEXT, LIJST_URL, KALENDER_API, ZOEKEN_URL, _config
     if args.base_url:
-        global BASE_URL, CONTEXT, LIJST_URL, KALENDER_API, ZOEKEN_URL
         BASE_URL = args.base_url.rstrip("/")
-        if args.context is not None:
-            CONTEXT = args.context.rstrip("/")
-        elif "csecho.be" in BASE_URL.lower():
-            CONTEXT = ""
-        else:
-            CONTEXT = "/raadpleegomgeving"
-        LIJST_URL = f"{BASE_URL}{CONTEXT}/zittingen/lijst"
-        KALENDER_API = f"{BASE_URL}{CONTEXT}/calendar/fetchcalendar"
-        ZOEKEN_URL = f"{BASE_URL}{CONTEXT}/zoeken"
+    if args.context is not None:
+        CONTEXT = args.context.rstrip("/")
+    elif args.base_url and "csecho.be" in BASE_URL.lower():
+        CONTEXT = ""
+    # Update afgeleide URLs
+    LIJST_URL = f"{BASE_URL}{CONTEXT}/zittingen/lijst"
+    KALENDER_API = f"{BASE_URL}{CONTEXT}/calendar/fetchcalendar"
+    ZOEKEN_URL = f"{BASE_URL}{CONTEXT}/zoeken"
+    # Maak scraper config
+    _config = ScraperConfig(base_url=BASE_URL)
 
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"

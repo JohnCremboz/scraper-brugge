@@ -20,12 +20,19 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
+from base_scraper import (
+    ScraperConfig,
+    create_session,
+    sanitize_filename,
+    download_document as base_download_document,
+    DownloadResult,
+    logger,
+)
+
 BASE_URL = "https://ranst.meetingburger.net"
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
-})
+SESSION: requests.Session | None = None
+_config: ScraperConfig | None = None
 
 # Maanden in het Nederlands → nummer
 MAAND_NL = {
@@ -33,6 +40,16 @@ MAAND_NL = {
     "mei": 5, "juni": 6, "juli": 7, "augustus": 8,
     "september": 9, "oktober": 10, "november": 11, "december": 12,
 }
+
+
+def init_session():
+    """Initialiseer de sessie met base_scraper configuratie."""
+    global SESSION, _config
+    _config = ScraperConfig(base_url=BASE_URL, output_dir=Path("."))
+    try:
+        SESSION = create_session(_config)
+    except Exception as e:
+        logger.warning("Sessie-initialisatie mislukt: %s", e)
 
 
 def sanitize_filename(name: str) -> str:
@@ -546,8 +563,10 @@ Voorbeelden:
     args = parser.parse_args()
 
     if args.base_url:
-        global BASE_URL
+        global BASE_URL, _config
         BASE_URL = args.base_url.rstrip("/")
+
+    init_session()
 
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"

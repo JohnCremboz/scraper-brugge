@@ -21,75 +21,54 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from tqdm import tqdm
 
+from base_scraper import (
+    ScraperConfig,
+    create_session,
+    sanitize_filename,
+    download_document as base_download_document,
+    DownloadResult,
+    logger,
+)
+
 BASE_URL = "https://besluitvorming.leuven.be"
 KALENDER_URL = f"{BASE_URL}/zittingen/kalender"
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
-})
+SESSION: requests.Session | None = None
+_config: ScraperConfig | None = None
 
 
-def sanitize_filename(name: str) -> str:
-    """Verwijder ongeldige tekens uit bestandsnamen."""
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
-    name = re.sub(r'_+', '_', name)
-    name = name.strip("_. ")
-    return name[:180] if len(name) > 180 else name or "document"
+def init_session():
+    """Initialiseer de sessie met base_scraper configuratie."""
+    global SESSION, _config
+    _config = ScraperConfig(base_url=BASE_URL, output_dir=Path("."))
+    try:
+        SESSION = create_session(_config)
+    except Exception as e:
+        logger.warning("Sessie-initialisatie mislukt: %s", e)
+
+# Initialiseer direct bij import voor compatibiliteit
+init_session()
 
 
 def download_document(doc_url: str, bestemming: Path, filename_hint: str = "") -> bool:
-    """Download een /document/{id} URL als PDF."""
-    full_url = urljoin(BASE_URL, doc_url) if not doc_url.startswith("http") else doc_url
-    try:
-        resp = SESSION.get(full_url, stream=True, timeout=60, allow_redirects=True)
-        if resp.status_code != 200:
-            return False
-
-        # Bepaal bestandsnaam vanuit Content-Disposition
-        cd = resp.headers.get("content-disposition", "")
-        naam = ""
-        if "filename=" in cd:
-            match = re.search(r'filename=["\']?([^"\';\n]+)', cd)
-            if match:
-                naam = match.group(1).strip().strip('"\'')
-
-        if not naam:
-            naam = filename_hint or doc_url.split("/")[-1]
-
-        if not naam.lower().endswith(".pdf"):
-            naam += ".pdf"
-
-        naam = sanitize_filename(naam)
-        bestemming_pad = bestemming / naam
-
-        # Overgeslagen als al bestaat
-        if bestemming_pad.exists():
-            return True
-
-        # Lees chunks, controleer op PDF header
-        eerste_chunk = None
-        chunks = []
-        for chunk in resp.iter_content(8192):
-            if chunk:
-                if eerste_chunk is None:
-                    eerste_chunk = chunk
-                    if not chunk.startswith(b"%PDF"):
-                        return False  # Geen PDF
-                chunks.append(chunk)
-
-        if not chunks:
-            return False
-
-        with open(bestemming_pad, "wb") as f:
-            for chunk in chunks:
-                f.write(chunk)
-
-        return True
-
-    except Exception as e:
-        print(f"      [!] Download fout {full_url}: {type(e).__name__}: {e}")
+    """Download een /document/{id} URL als PDF via base_scraper."""
+    if SESSION is None or _config is None:
+        logger.error("Sessie niet geïnitialiseerd")
         return False
+    
+    result = base_download_document(
+        session=SESSION,
+        config=_config,
+        doc_url=doc_url,
+        output_dir=bestemming,
+        filename_hint=filename_hint,
+        require_pdf=True,
+    )
+    
+    if not result.success and result.error:
+        logger.debug("Download fout %s: %s", doc_url, result.error)
+    
+    return result.success
 
 
 def haal_document_links_van_pagina(url: str) -> list[dict]:
