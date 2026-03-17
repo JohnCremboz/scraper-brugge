@@ -371,7 +371,7 @@ def toon_organen():
     if not organen:
         print("Geen organen gevonden.")
         return
-    print("\nBeschikbare organen op raadpleeg-halle.onlinesmartcities.be:")
+    print(f"\nBeschikbare organen op {BASE_URL}:")
     print("-" * 50)
     for org in organen:
         print(f"  - {org['naam']}")
@@ -385,7 +385,7 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
     output_pad.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  Scraper: raadpleeg-halle.onlinesmartcities.be")
+    print(f"  Scraper: {BASE_URL}")
     print(f"  Orgaan:  {orgaan or 'Alle organen'}")
     print(f"  Maanden: {maanden}")
     print(f"  Incl. agendapunten: {'Ja' if ook_agendapunten else 'Nee (gebruik --agendapunten)'}")
@@ -483,8 +483,15 @@ Voorbeelden:
         help="Toon beschikbare organen en stop")
     parser.add_argument("--zichtbaar", action="store_true",
         help="Toon de browser (voor debuggen)")
+    parser.add_argument("--base-url", type=str, default=None,
+        help="Alternatieve basis-URL (voor gebruik via scraper_groep.py)")
 
     args = parser.parse_args()
+
+    if args.base_url:
+        global BASE_URL, KALENDER_URL
+        BASE_URL = args.base_url.rstrip("/")
+        KALENDER_URL = f"{BASE_URL}/zittingen/kalender"
 
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"

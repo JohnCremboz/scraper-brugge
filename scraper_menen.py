@@ -309,7 +309,7 @@ def toon_organen():
     if not organen:
         print("Geen organen gevonden.")
         return
-    print("\nBeschikbare organen op menen-echo.cipalschaubroeck.be:")
+    print(f"\nBeschikbare organen op {BASE_URL}{CONTEXT}:")
     print("-" * 55)
     for org in organen:
         print(f"  - {org['naam']}")
@@ -334,7 +334,7 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
     output_pad.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  Scraper: menen-echo.cipalschaubroeck.be")
+    print(f"  Scraper: {BASE_URL}{CONTEXT}")
     print(f"  Orgaan:  {orgaan or 'Alle organen'}")
     print(f"  Maanden: {maanden}")
     print(f"  Incl. agendapunten: {'Ja' if ook_agendapunten else 'Nee (gebruik --agendapunten)'}")
@@ -451,8 +451,25 @@ Voorbeelden:
         help="Shorthand voor --document-filter notulen")
     parser.add_argument("--lijst-organen", action="store_true",
         help="Toon beschikbare organen en stop")
+    parser.add_argument("--base-url", type=str, default=None,
+        help="Alternatieve basis-URL (voor gebruik via scraper_groep.py)")
+    parser.add_argument("--context", type=str, default=None,
+        help="Context-pad (standaard: /raadpleegomgeving, leeg voor csecho.be)")
 
     args = parser.parse_args()
+
+    if args.base_url:
+        global BASE_URL, CONTEXT, LIJST_URL, KALENDER_API, ZOEKEN_URL
+        BASE_URL = args.base_url.rstrip("/")
+        if args.context is not None:
+            CONTEXT = args.context.rstrip("/")
+        elif "csecho.be" in BASE_URL.lower():
+            CONTEXT = ""
+        else:
+            CONTEXT = "/raadpleegomgeving"
+        LIJST_URL = f"{BASE_URL}{CONTEXT}/zittingen/lijst"
+        KALENDER_API = f"{BASE_URL}{CONTEXT}/calendar/fetchcalendar"
+        ZOEKEN_URL = f"{BASE_URL}{CONTEXT}/zoeken"
 
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"

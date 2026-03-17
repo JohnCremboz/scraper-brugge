@@ -336,7 +336,7 @@ def haal_organen() -> list[dict]:
                     href = urljoin(BASE_URL, href)
 
                 parsed = urlparse(href)
-                if parsed.netloc != "ranst.meetingburger.net":
+                if parsed.netloc != urlparse(BASE_URL).netloc:
                     continue
 
                 delen = [s for s in parsed.path.strip("/").split("/") if s]
@@ -401,7 +401,7 @@ def haal_vergadering_links(orgaan_slug: str) -> list[dict]:
                 href = a["href"]
                 full = urljoin(BASE_URL, href)
                 parsed = urlparse(full)
-                if parsed.netloc != "ranst.meetingburger.net":
+                if parsed.netloc != urlparse(BASE_URL).netloc:
                     continue
                 delen = [s for s in parsed.path.strip("/").split("/") if s]
                 if (len(delen) == 2
@@ -425,7 +425,7 @@ def toon_organen():
     if not organen:
         print("Geen organen gevonden.")
         return
-    print(f"\nBeschikbare organen op ranst.meetingburger.net:")
+    print(f"\nBeschikbare organen op {BASE_URL}:")
     print("-" * 50)
     for org in organen:
         print(f"  - {org['naam']}  (/{org['slug']})")
@@ -444,7 +444,7 @@ def scrape(
     drempelDatum = datetime.now() - timedelta(days=maanden * 30)
 
     print(f"\n{'='*60}")
-    print(f"  Scraper: ranst.meetingburger.net")
+    print(f"  Scraper: {BASE_URL}")
     print(f"  Orgaan:  {orgaan or 'Alle organen'}")
     print(f"  Maanden: {maanden} (vanaf {drempelDatum.strftime('%d/%m/%Y')})")
     print(f"  Documentfilter: {document_filter or 'Geen (alle documenten)'}")
@@ -540,8 +540,14 @@ Voorbeelden:
         help="Shorthand voor --document-filter notulen")
     parser.add_argument("--lijst-organen", action="store_true",
         help="Toon beschikbare organen en stop")
+    parser.add_argument("--base-url", type=str, default=None,
+        help="Alternatieve basis-URL (voor gebruik via scraper_groep.py)")
 
     args = parser.parse_args()
+
+    if args.base_url:
+        global BASE_URL
+        BASE_URL = args.base_url.rstrip("/")
 
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"
