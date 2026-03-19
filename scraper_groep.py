@@ -7,7 +7,11 @@ Ondersteunde types:
   cipalschaubroeck *-echo.cipalschaubroeck.be/raadpleegomgeving · *.csecho.be  (REST API)
   meetingburger    *.meetingburger.net                                      (REST)
   ingelmunster     www.ingelmunster.be/db_files_2                            (HTML/PDF links)
-  lblod            lblod.*.be                                               (geen scraper)
+  lblod            lblod.*.be                                               (HTML/PDF)
+  ibabs            *.bestuurlijkeinformatie.nl                              (HTML/PDF)
+  vlaamsbrabant    bestuur.vlaamsbrabant.be                                 (HTML)
+  deliberations    deliberations.be · conseilcommunal.be                    (HTML/PDF)
+  irisnet          publi.irisnet.be                                         (geen scraper)
   overig           Andere bekende sites                                     (handmatig)
   leeg             Geen URL beschikbaar
 
@@ -104,6 +108,22 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": True,
         "kleur": "bright_green",
     },
+    "deliberations": {
+        "label": "Deliberations.be / ConseilCommunal.be",
+        "beschrijving": "deliberations.be · conseilcommunal.be — Waalse gemeenten",
+        "scraper": "scraper_deliberations.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": True,
+        "kleur": "bright_magenta",
+    },
+    "irisnet": {
+        "label": "Irisnet (Brussel)",
+        "beschrijving": "publi.irisnet.be — Brusselse gemeenten",
+        "scraper": None,
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_yellow",
+    },
     "overig": {
         "label": "Overig (aangepaste site)",
         "beschrijving": "Diverse sites — geen gestandaardiseerde scraper beschikbaar",
@@ -159,6 +179,10 @@ def detecteer_type(url: str) -> str:
         return "ibabs"
     if "bestuur.vlaamsbrabant.be" in u:
         return "vlaamsbrabant"
+    if "deliberations.be" in u or "conseilcommunal.be" in u:
+        return "deliberations"
+    if "publi.irisnet.be" in u:
+        return "irisnet"
     return "overig"
 
 

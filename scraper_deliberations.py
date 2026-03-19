@@ -45,6 +45,7 @@ from base_scraper import (
     ScraperConfig,
     create_session,
     sanitize_filename,
+    robust_get,
     logger,
     download_document,
     DownloadResult,
@@ -69,17 +70,9 @@ def init_session(base_url: str | None = None) -> None:
 
 
 def _get(url: str) -> requests.Response | None:
-    """GET helper met error handling."""
-    assert SESSION is not None
+    """GET helper — pad wordt relatief aan BASE_URL opgelost."""
     full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
-    try:
-        r = SESSION.get(full_url, timeout=30)
-        if r.status_code == 200:
-            return r
-        logger.debug("HTTP %d voor %s", r.status_code, full_url)
-    except Exception as e:
-        logger.debug("Request fout %s: %s", full_url, e)
-    return None
+    return robust_get(SESSION, full_url, retries=1, timeout=30)
 
 
 # ---------------------------------------------------------------------------

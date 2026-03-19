@@ -32,6 +32,7 @@ from base_scraper import (
     ScraperConfig,
     create_session,
     download_document,
+    robust_get,
     sanitize_filename,
 )
 
@@ -39,18 +40,8 @@ SESSION: requests.Session | None = None
 _config: ScraperConfig | None = None
 
 
-def _get(url: str, retries: int = 3) -> requests.Response | None:
-    for poging in range(retries):
-        try:
-            resp = SESSION.get(url, timeout=20)
-            resp.raise_for_status()
-            return resp
-        except Exception as exc:
-            if poging == retries - 1:
-                print(f"    [!] Fout bij {url}: {exc}")
-                return None
-            time.sleep(1.5 * (poging + 1))
-    return None
+def _get(url: str) -> requests.Response | None:
+    return robust_get(SESSION, url)
 
 
 # ---------------------------------------------------------------------------

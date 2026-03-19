@@ -32,6 +32,7 @@ from base_scraper import (
     ScraperConfig,
     create_session,
     sanitize_filename,
+    robust_get,
     logger,
 )
 
@@ -57,16 +58,8 @@ def init_session(base_url: str | None = None) -> None:
 
 def _get(pad: str) -> requests.Response | None:
     """GET helper — pad wordt relatief aan BASE_URL opgelost."""
-    assert SESSION is not None
     url = pad if pad.startswith("http") else f"{BASE_URL}{pad}"
-    try:
-        r = SESSION.get(url, timeout=30)
-        if r.status_code == 200:
-            return r
-        logger.debug("HTTP %d voor %s", r.status_code, url)
-    except Exception as e:
-        logger.debug("Request fout %s: %s", url, e)
-    return None
+    return robust_get(SESSION, url, retries=1, timeout=30)
 
 
 def _soup(resp: requests.Response) -> BeautifulSoup:

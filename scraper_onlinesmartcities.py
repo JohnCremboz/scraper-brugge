@@ -41,6 +41,7 @@ from base_scraper import (
     DownloadResult,
     create_session,
     download_document,
+    robust_get,
     sanitize_filename,
 )
 
@@ -65,17 +66,11 @@ def init_session() -> None:
 
 
 def _get(url: str) -> requests.Response | None:
-    """Wrapper voor GET requests met error handling"""
-    if not SESSION:
-        return None
-    
-    try:
-        resp = SESSION.get(url, timeout=_config.timeout if _config else 30)
-        resp.raise_for_status()
+    """GET met rate limiting."""
+    resp = robust_get(SESSION, url, retries=1, timeout=_config.timeout if _config else 30)
+    if resp is not None:
         time.sleep(_config.rate_limit_delay if _config else 0.5)
-        return resp
-    except Exception:
-        return None
+    return resp
 
 
 # ---------------------------------------------------------------------------

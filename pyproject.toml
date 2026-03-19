@@ -1,0 +1,19 @@
+[project]
+name = "scraper-brugge"
+version = "1.0.0"
+description = "Besluitendatabank — scraper voor Belgische gemeentelijke besluiten & notulen"
+requires-python = ">=3.12"
+
+dependencies = [
+    "requests>=2.32",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "tqdm>=4.66",
+    "rich>=13.0",
+    "questionary>=2.0",
+    "python-dateutil>=2.9",
+    "playwright>=1.40",
+]
+
+[project.scripts]
+scraper = "start:main"

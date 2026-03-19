@@ -149,6 +149,30 @@ def rate_limited_get(
     return response
 
 
+def robust_get(
+    session: requests.Session,
+    url: str,
+    retries: int = 3,
+    timeout: int = 20,
+    delay_factor: float = 1.5,
+) -> requests.Response | None:
+    """
+    HTTP GET met retry-logica en exponentiële backoff.
+
+    Returns None bij permanente fouten; logt alleen bij laatste poging.
+    """
+    for poging in range(retries):
+        try:
+            resp = session.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except Exception as exc:
+            if poging == retries - 1:
+                logger.warning("GET mislukt %s: %s", url, exc)
+                return None
+            time.sleep(delay_factor * (poging + 1))
+
+
 # ---------------------------------------------------------------------------
 # Bestandsnaam sanitizatie (met path traversal bescherming)
 # ---------------------------------------------------------------------------
