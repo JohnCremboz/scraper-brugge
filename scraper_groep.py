@@ -88,6 +88,22 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": False,
         "kleur": "magenta",
     },
+    "ibabs": {
+        "label": "iBabs Publieksportaal",
+        "beschrijving": "*.bestuurlijkeinformatie.nl",
+        "scraper": "scraper_ibabs.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": True,
+        "kleur": "bright_cyan",
+    },
+    "vlaamsbrabant": {
+        "label": "Provincie Vlaams-Brabant",
+        "beschrijving": "bestuur.vlaamsbrabant.be",
+        "scraper": "scraper_vlaamsbrabant.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": True,
+        "kleur": "bright_green",
+    },
     "overig": {
         "label": "Overig (aangepaste site)",
         "beschrijving": "Diverse sites — geen gestandaardiseerde scraper beschikbaar",
@@ -139,6 +155,10 @@ def detecteer_type(url: str) -> str:
         return "ingelmunster"
     if re.search(r"\blblod\.", u):
         return "lblod"
+    if "bestuurlijkeinformatie.nl" in u:
+        return "ibabs"
+    if "bestuur.vlaamsbrabant.be" in u:
+        return "vlaamsbrabant"
     return "overig"
 
 

@@ -41,6 +41,23 @@ DEDICATED: dict[str, dict] = {
         "heeft_browser": False,
         "heeft_agendapunten": False,
     },
+    "Provincie Vlaams-Brabant": {
+        "script": "scraper_vlaamsbrabant.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": True,
+    },
+    "Kalmthout": {
+        "script": "scraper_ibabs.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": True,
+        "gemeente_arg": True,
+    },
+    "Stabroek": {
+        "script": "scraper_ibabs.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": True,
+        "gemeente_arg": True,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -163,7 +180,11 @@ def bouw_commando(
     if gemeente["gemeente"] not in DEDICATED:
         cmd += ["--base-url", gemeente["base_url"]]
 
-    if orgaan:
+    # iBabs dedicated scrapers krijgen --gemeente ipv --alle
+    dedicated_info = DEDICATED.get(gemeente["gemeente"], {})
+    if dedicated_info.get("gemeente_arg"):
+        cmd += ["--gemeente", gemeente["gemeente"]]
+    elif orgaan:
         cmd += ["--orgaan", orgaan]
     else:
         cmd += ["--alle"]
