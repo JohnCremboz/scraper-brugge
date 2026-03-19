@@ -2,7 +2,7 @@
 
 ## Huidige status (19 maart 2026)
 
-**Dekking:** 429/555 gemeenten hebben een werkende scraper (77%)
+**Dekking:** 430/555 gemeenten hebben een werkende scraper (77%)
 
 | Type | Aantal | Scraper | Status |
 |------|--------|---------|--------|
@@ -42,9 +42,9 @@
 - [ ] Unit tests schrijven voor base_scraper.py (sanitize_filename, robust_get, download_document)
 - [ ] Integratietests per scraper-type (mock HTTP responses)
 
-### 5. Provincie Antwerpen
-- URL: `echo.provincieantwerpen.be` → 421 Misdirected Request (SNI-probleem)
-- Programmatisch niet bereikbaar; mogelijk handmatig of via alternatief pad
+### 5. ~~Provincie Antwerpen~~ ✅ Opgelost
+- Oude URL (echo.provincieantwerpen.be) was dood → nieuwe bron gevonden
+- Scraper: `scraper_provantwerpen.py` (HTML-verslagen + PDF-notulen via provincieantwerpen.be)
 
 ### 6. Pubcon-gemeenten (Laakdal, Oudsbergen)
 - Platform: `*.azurewebsites.net/pubcon`
@@ -67,6 +67,7 @@ scraper-brugge/
 ├── scraper_lblod.py         # LBLOD (48 gem., HTML)
 ├── scraper_deliberations.py # Deliberations.be (180 gem., HTML)
 ├── scraper_ibabs.py         # iBabs (2 gem., HTML)
+├── scraper_provantwerpen.py  # Prov. Antwerpen (1, HTML/PDF)
 ├── scraper_vlaamsbrabant.py # Prov. Vlaams-Brabant (1, HTML)
 ├── scraper_ingelmunster.py  # Ingelmunster (1, HTML)
 ├── simba-source.csv         # Bronlijst 555 gemeenten (gemeente;url)

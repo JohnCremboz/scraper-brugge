@@ -108,6 +108,14 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": True,
         "kleur": "bright_green",
     },
+    "provantwerpen": {
+        "label": "Provincie Antwerpen",
+        "beschrijving": "provincieantwerpen.be — provincieraad verslagen & notulen",
+        "scraper": "scraper_provantwerpen.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_green",
+    },
     "deliberations": {
         "label": "Deliberations.be / ConseilCommunal.be",
         "beschrijving": "deliberations.be · conseilcommunal.be — Waalse gemeenten",
@@ -179,6 +187,8 @@ def detecteer_type(url: str) -> str:
         return "ibabs"
     if "bestuur.vlaamsbrabant.be" in u:
         return "vlaamsbrabant"
+    if "provincieantwerpen.be" in u and "provincieraad" in u:
+        return "provantwerpen"
     if "deliberations.be" in u or "conseilcommunal.be" in u:
         return "deliberations"
     if "publi.irisnet.be" in u:

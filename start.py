@@ -46,6 +46,11 @@ DEDICATED: dict[str, dict] = {
         "heeft_browser": False,
         "heeft_agendapunten": True,
     },
+    "Provincie Antwerpen": {
+        "script": "scraper_provantwerpen.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+    },
     "Kalmthout": {
         "script": "scraper_ibabs.py",
         "heeft_browser": False,
