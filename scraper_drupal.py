@@ -3,7 +3,7 @@ Scraper voor Drupal-gemeenten met directe PDF-links.
 
 Ondersteunde gemeenten:
   Dilbeek, Knokke-Heist, Rijkevorsel, Willebroek, Wervik, Putte,
-  Auderghem, Uccle
+  Auderghem, Uccle, Laakdal
 
 URL-patroon in simba-source.csv: */sites/default/files* of */sites/*/files*
 
@@ -93,6 +93,10 @@ GEMEENTEN: dict[str, dict] = {
     "www.uccle.be": {
         "naam": "Uccle",
         "listing_pad": "/fr/ma-commune/le-conseil-communal",
+    },
+    "www.laakdal.be": {
+        "naam": "Laakdal",
+        "listing_pad": "/notulen-gemeenteraad",
     },
 }
 
