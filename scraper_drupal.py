@@ -2,7 +2,8 @@
 Scraper voor Drupal-gemeenten met directe PDF-links.
 
 Ondersteunde gemeenten:
-  Dilbeek, Knokke-Heist, Rijkevorsel, Willebroek, Wervik, Putte
+  Dilbeek, Knokke-Heist, Rijkevorsel, Willebroek, Wervik, Putte,
+  Auderghem, Uccle
 
 URL-patroon in simba-source.csv: */sites/default/files* of */sites/*/files*
 
@@ -85,6 +86,14 @@ GEMEENTEN: dict[str, dict] = {
             r"agenda-notulen-en-b"
         ),
     },
+    "www.auderghem.be": {
+        "naam": "Auderghem",
+        "listing_pad": "/college-et-conseil",
+    },
+    "www.uccle.be": {
+        "naam": "Uccle",
+        "listing_pad": "/fr/ma-commune/le-conseil-communal",
+    },
 }
 
 
@@ -124,6 +133,22 @@ def datum_uit_pad(pad: str) -> date | None:
     if m:
         try:
             return date(int(m.group(1)), int(m.group(2)), 1)
+        except ValueError:
+            pass
+
+    # Bestandsnaam: YYYY-MM-DD (bijv. CC-2026-03-19-OJ_...)
+    m = re.search(r"(20\d{2})-(0[1-9]|1[0-2])-([0-2]\d|3[01])(?!\d)", pad)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+
+    # Bestandsnaam: YYYY_MM_DD (bijv. 2026_01_29_pv.pdf — Auderghem)
+    m = re.search(r"(20\d{2})_(0[1-9]|1[0-2])_([0-2]\d|3[01])(?!\d)", pad)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except ValueError:
             pass
 

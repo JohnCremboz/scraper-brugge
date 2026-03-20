@@ -2,7 +2,7 @@
 
 ## Huidige status (19 maart 2026)
 
-**Dekking:** ~470/565 gemeenten hebben een werkende scraper (~83%)
+**Dekking:** ~487/565 gemeenten hebben een werkende scraper (~86%)
 **CSV:** 575 rijen = 10 provincies + 565 gemeenten (compleet, matcht Wikipedia)
 
 | Type | Aantal | Scraper | Status |
@@ -13,17 +13,32 @@
 | LBLOD | 52 | scraper_lblod.py | ✅ Klaar |
 | MeetingBurger | 45 | scraper_ranst.py | ✅ Klaar |
 | **Icordis CMS (LCP nv)** | **7** | scraper_icordis.py | ✅ Klaar |
-| **Drupal directe PDFs** | **6** | scraper_drupal.py | ✅ Klaar |
+| **Drupal directe PDFs** | **8** | scraper_drupal.py | ✅ Klaar |
+| **Irisnet (Brussel — 10 gem.)** | **10** | scraper_irisnet.py | ✅ Klaar |
 | iBabs | 2 | scraper_ibabs.py | ✅ Klaar |
+| **Ixelles / Elsene** | **1** | scraper_ixelles.py | ✅ Klaar |
 | Prov. Antwerpen | 1 | scraper_provantwerpen.py | ✅ Klaar |
 | Vlaams-Brabant | 1 | scraper_vlaamsbrabant.py | ✅ Klaar |
 | Ingelmunster | 1 | scraper_ingelmunster.py | ✅ Klaar |
-| Irisnet (Brussel — 4 gem.) | 4 | scraper_irisnet.py | ✅ Klaar |
 | Brussel | 1 | scraper_brussel.py | ✅ Klaar |
 | Forest | 1 | scraper_forest.py | ✅ Klaar |
 | Molenbeek-Saint-Jean | 1 | scraper_molenbeek.py | ✅ Klaar |
 | Schaerbeek | 1 | scraper_schaerbeek.py | ✅ Klaar |
-| **Overig (individueel)** | **~97** | — | ❌ Geen scraper |
+| **Overig (individueel)** | **~80** | — | ❌ Geen scraper |
+
+**Brusselse status:**
+| Gemeente | Platform | Status |
+|----------|----------|--------|
+| Anderlecht, Berchem-Sainte-Agathe, Etterbeek, Evere, Ganshoren, Jette, Saint-Gilles, Saint-Josse-ten-Noode, Watermael-Boitsfort, Woluwe-Saint-Lambert | publi.irisnet.be | ✅ irisnet |
+| Brussel | bruxelles.be | ✅ scraper_brussel.py |
+| Forest | forest.brussels | ✅ scraper_forest.py |
+| Molenbeek | molenbeek.irisnet.be | ✅ scraper_molenbeek.py |
+| Schaerbeek | 1030.be | ✅ scraper_schaerbeek.py |
+| Ixelles / Elsene | ixelles.be | ✅ scraper_ixelles.py |
+| Uccle | uccle.be (Drupal) | ✅ scraper_drupal.py |
+| Auderghem | auderghem.be (Drupal) | ✅ scraper_drupal.py |
+| Koekelberg | koekelberg.be (MediaWiki) | ❌ JS-rendered |
+| Woluwe-Saint-Pierre | woluwe1150.be (WordPress) | ❌ Geen documenten |
 
 ---
 
@@ -31,11 +46,12 @@
 
 ### 1. ~~Irisnet-scraper (8 Brusselse gemeenten)~~ ✅ Opgelost
 
-### 2. ~~Vlaamse "overig" gemeenten — Icordis & Drupal~~ ✅ Opgelost (deels)
-- **Icordis CMS** (7 gem.): Eeklo, Baarle-Hertog, Kortenberg, Lanaken, Bilzen-Hoeselt, Houthulst, Oostkamp → `scraper_icordis.py`
-- **Drupal direct PDF** (6 gem.): Dilbeek, Knokke-Heist, Rijkevorsel, Willebroek, Wervik, Putte → `scraper_drupal.py`
-- **Platform redirects** bijgewerkt in CSV: Hoogstraten/Olen → MeetingBurger; Lendelede/Mesen/Heuvelland/Temse → LBLOD
-- **Niet scrapbaar** (JS-rendered of geblokkeerd): Blankenberge, Dendermonde, Evergem, Lille, Oudenaarde, Scherpenheuvel-Zichem, Oosterzele
+### 2. ~~Brusselse gemeenten — alle gedaan~~ ✅ Opgelost
+
+- **Irisnet** (10 gem.): Anderlecht, Berchem-Sainte-Agathe, Etterbeek, Evere, Ganshoren, Jette, Saint-Gilles, Saint-Josse-ten-Noode, Watermael-Boitsfort, Woluwe-Saint-Lambert → `scraper_irisnet.py`
+- **Individuele scrapers**: Brussel, Forest, Molenbeek, Schaerbeek, Ixelles
+- **Drupal**: Auderghem, Uccle → `scraper_drupal.py`
+- **Niet scrapbaar**: Koekelberg (MediaWiki, JS), Woluwe-Saint-Pierre (WordPress, geen documenten)
 
 ### 3. Nog te onderzoeken / te bouwen — **13 SP**
 - [ ] Essen (PaddleCMS) — correcte URL zoeken
@@ -88,7 +104,8 @@ scraper-brugge/
 ├── scraper_molenbeek.py     # Molenbeek-Saint-Jean (molenbeek.irisnet.be)
 ├── scraper_schaerbeek.py    # Schaerbeek (1030.be, via sitemap)
 ├── scraper_icordis.py       # Icordis CMS — 7 Vlaamse gem. (*/file/download)
-├── scraper_drupal.py        # Drupal direct PDF — 6 Vlaamse gem. (*/sites/*/files)
+├── scraper_drupal.py        # Drupal direct PDF — 8 gem. (*/sites/*/files) incl. Auderghem, Uccle
+├── scraper_ixelles.py       # Ixelles / Elsene (conseil communal ODJ + PV)
 ├── compare_wiki.py          # Vergelijking CSV vs Wikipedia (565 gem.)
 ├── simba-source.csv         # Bronlijst 575 rijen (10 provincies + 565 gemeenten)
 ├── pyproject.toml           # Dependencies

@@ -14,6 +14,7 @@ Ondersteunde types:
   irisnet          publi.irisnet.be                                         (geen scraper)
   icordis          *.be/file/download — Icordis CMS (LCP nv)               (HTML/PDF)
   drupal           *.be/sites/*/files — Drupal direct PDF                   (HTML/PDF)
+  ixelles          www.ixelles.be — Ixelles conseil communal                (HTML/PDF)
   overig           Andere bekende sites                                     (handmatig)
   leeg             Geen URL beschikbaar
 
@@ -182,6 +183,14 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": False,
         "kleur": "green",
     },
+    "ixelles": {
+        "label": "Ixelles / Elsene",
+        "beschrijving": "www.ixelles.be — conseil communal ODJ & PV",
+        "scraper": "scraper_ixelles.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_yellow",
+    },
     "overig": {
         "label": "Overig (aangepaste site)",
         "beschrijving": "Diverse sites — geen gestandaardiseerde scraper beschikbaar",
@@ -255,6 +264,8 @@ def detecteer_type(url: str) -> str:
         return "icordis"
     if re.search(r"/sites/[^/]+/files", u):
         return "drupal"
+    if "www.ixelles.be" in u:
+        return "ixelles"
     return "overig"
 
 
