@@ -2,7 +2,7 @@
 
 ## Huidige status (20 maart 2026)
 
-**Dekking:** ~497/565 gemeenten hebben een werkende scraper (~88%)
+**Dekking:** ~490/565 gemeenten hebben een werkende scraper (~87%)
 **CSV:** 575 rijen = 10 provincies + 565 gemeenten (compleet, matcht Wikipedia)
 
 | Type | Aantal | Scraper | Status |
@@ -26,7 +26,7 @@
 | Forest | 1 | scraper_forest.py | ✅ Klaar |
 | Molenbeek-Saint-Jean | 1 | scraper_molenbeek.py | ✅ Klaar |
 | Schaerbeek | 1 | scraper_schaerbeek.py | ✅ Klaar |
-| **Overig (individueel)** | **~78** | — | ❌ Geen scraper |
+| **Overig (individueel)** | **~75** | — | ❌ Geen scraper |
 
 **Brusselse status:**
 | Gemeente | Platform | Status |
