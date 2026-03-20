@@ -1,23 +1,24 @@
 # TODO — Besluitendatabank Scraper
 
-## Huidige status (19 maart 2026)
+## Huidige status (20 maart 2026)
 
-**Dekking:** ~494/565 gemeenten hebben een werkende scraper (~87%)
+**Dekking:** ~497/565 gemeenten hebben een werkende scraper (~88%)
 **CSV:** 575 rijen = 10 provincies + 565 gemeenten (compleet, matcht Wikipedia)
 
 | Type | Aantal | Scraper | Status |
 |------|--------|---------|--------|
-| Deliberations.be | 199 | scraper_deliberations.py | ✅ Klaar |
+| Deliberations.be | 201 | scraper_deliberations.py | ✅ Klaar |
 | CipalSchaubroeck / CSEcho | 79 | scraper_menen.py | ✅ Klaar |
-| SmartCities / Besluitvorming | 67 | scraper_halle.py | ✅ Klaar |
+| SmartCities / Besluitvorming | 69 | scraper_halle.py | ✅ Klaar |
 | LBLOD | 52 | scraper_lblod.py | ✅ Klaar |
 | MeetingBurger | 45 | scraper_ranst.py | ✅ Klaar |
-| **Icordis CMS (LCP nv)** | **7** | scraper_icordis.py | ✅ Klaar |
-| **Drupal directe PDFs** | **8** | scraper_drupal.py | ✅ Klaar |
-| **Irisnet (Brussel — 10 gem.)** | **10** | scraper_irisnet.py | ✅ Klaar |
+| Drupal directe PDFs | 12 | scraper_drupal.py | ✅ Klaar |
+| Icordis CMS (LCP nv) | 11 | scraper_icordis.py | ✅ Klaar |
+| Irisnet (Brussel — 10 gem.) | 10 | scraper_irisnet.py | ✅ Klaar |
+| WordPress/Plone (Duitstalige gem.) | 7 | scraper_wordpress.py | ✅ Klaar |
 | iBabs | 2 | scraper_ibabs.py | ✅ Klaar |
-| **Ixelles / Elsene** | **1** | scraper_ixelles.py | ✅ Klaar |
-| **WordPress/Plone (Duitstalige gem.)** | **7** | scraper_wordpress.py | ✅ Klaar |
+| **Pubcon (Tobibus LBLOD)** | **1** | scraper_pubcon.py | ✅ Klaar |
+| Ixelles / Elsene | 1 | scraper_ixelles.py | ✅ Klaar |
 | Prov. Antwerpen | 1 | scraper_provantwerpen.py | ✅ Klaar |
 | Vlaams-Brabant | 1 | scraper_vlaamsbrabant.py | ✅ Klaar |
 | Ingelmunster | 1 | scraper_ingelmunster.py | ✅ Klaar |
@@ -25,7 +26,7 @@
 | Forest | 1 | scraper_forest.py | ✅ Klaar |
 | Molenbeek-Saint-Jean | 1 | scraper_molenbeek.py | ✅ Klaar |
 | Schaerbeek | 1 | scraper_schaerbeek.py | ✅ Klaar |
-| **Overig (individueel)** | **~71** | — | ❌ Geen scraper |
+| **Overig (individueel)** | **~78** | — | ❌ Geen scraper |
 
 **Brusselse status:**
 | Gemeente | Platform | Status |
@@ -97,9 +98,13 @@ Scrapers gebouwd in `scraper_wordpress.py` (7/9 gemeenten):
 
 ### 7. ~~CSV completeren (565 gemeenten)~~ ✅ Opgelost
 
-### 8. Pubcon-gemeenten (Laakdal, Oudsbergen)
-- Platform: `*.azurewebsites.net/pubcon`
-- Vereist authenticatie via Tobibus-portaal → niet scrapbaar zonder login
+### 8. ~~Pubcon-gemeenten (Laakdal, Oudsbergen)~~ ✅ Opgelost
+
+- **Oudsbergen**: `scraper_pubcon.py` — crawlt publiek `/LBLOD` endpoint, PDFs via Azure Blob Storage
+  (`stpubconoudsbergen.blob.core.windows.net/lblod/documents/`). Getest: 48/100 GR-docs (404s zijn
+  niet-publieke inkomende stukken/processtukken).
+- **Laakdal**: notulen staan op www.laakdal.be (PaddleCMS/Drupal) → `scraper_drupal.py`.
+  Pubcon LBLOD-endpoint bevat alleen metadata zonder documenten in blob.
 
 ---
 
@@ -120,14 +125,15 @@ scraper-brugge/
 ├── scraper_ibabs.py         # iBabs (2 gem., HTML)
 ├── scraper_provantwerpen.py  # Prov. Antwerpen (1, HTML/PDF)
 ├── scraper_vlaamsbrabant.py # Prov. Vlaams-Brabant (1, HTML)
-├── scraper_irisnet.py       # Irisnet/publi.irisnet.be (4 Brusselse gem.)
+├── scraper_irisnet.py       # Irisnet/publi.irisnet.be (10 Brusselse gem.)
 ├── scraper_brussel.py       # Stad Brussel (bruxelles.be)
 ├── scraper_forest.py        # Forest/Vorst (forest.brussels)
 ├── scraper_molenbeek.py     # Molenbeek-Saint-Jean (molenbeek.irisnet.be)
 ├── scraper_schaerbeek.py    # Schaerbeek (1030.be, via sitemap)
 ├── scraper_icordis.py       # Icordis CMS — 7 Vlaamse gem. (*/file/download)
-├── scraper_drupal.py        # Drupal direct PDF — 8 gem. (*/sites/*/files) incl. Auderghem, Uccle
+├── scraper_drupal.py        # Drupal direct PDF — 12 gem. (*/sites/*/files) incl. Auderghem, Uccle, Laakdal
 ├── scraper_wordpress.py     # WordPress/Plone — 7 Duitstalige gem. (*/wp-content/uploads*)
+├── scraper_pubcon.py        # Pubcon/Tobibus LBLOD — 1 gem. (Oudsbergen, Azure Blob Storage)
 ├── scraper_ixelles.py       # Ixelles / Elsene (conseil communal ODJ + PV)
 ├── compare_wiki.py          # Vergelijking CSV vs Wikipedia (565 gem.)
 ├── simba-source.csv         # Bronlijst 575 rijen (10 provincies + 565 gemeenten)
