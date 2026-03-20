@@ -12,6 +12,8 @@ Ondersteunde types:
   vlaamsbrabant    bestuur.vlaamsbrabant.be                                 (HTML)
   deliberations    deliberations.be · conseilcommunal.be                    (HTML/PDF)
   irisnet          publi.irisnet.be                                         (geen scraper)
+  icordis          *.be/file/download — Icordis CMS (LCP nv)               (HTML/PDF)
+  drupal           *.be/sites/*/files — Drupal direct PDF                   (HTML/PDF)
   overig           Andere bekende sites                                     (handmatig)
   leeg             Geen URL beschikbaar
 
@@ -127,10 +129,58 @@ TYPES: dict[str, dict] = {
     "irisnet": {
         "label": "Irisnet (Brussel)",
         "beschrijving": "publi.irisnet.be — Brusselse gemeenten",
-        "scraper": None,
+        "scraper": "scraper_irisnet.py",
         "heeft_browser": False,
         "heeft_agendapunten": False,
         "kleur": "bright_yellow",
+    },
+    "brussel": {
+        "label": "Stad Brussel",
+        "beschrijving": "bruxelles.be / brussel.be — ordres du jour & PV",
+        "scraper": "scraper_brussel.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_yellow",
+    },
+    "forest": {
+        "label": "Forest / Vorst",
+        "beschrijving": "forest.brussels — conseil communal publicaties",
+        "scraper": "scraper_forest.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_yellow",
+    },
+    "molenbeek": {
+        "label": "Molenbeek-Saint-Jean",
+        "beschrijving": "molenbeek.irisnet.be — conseil communal",
+        "scraper": "scraper_molenbeek.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_yellow",
+    },
+    "schaerbeek": {
+        "label": "Schaerbeek / Schaarbeek",
+        "beschrijving": "1030.be — notulen gemeenteraad via sitemap",
+        "scraper": "scraper_schaerbeek.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_yellow",
+    },
+    "icordis": {
+        "label": "Icordis CMS (LCP nv)",
+        "beschrijving": "*.be/file/download — Vlaamse gemeenten op Icordis CMS",
+        "scraper": "scraper_icordis.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_green",
+    },
+    "drupal": {
+        "label": "Drupal directe PDFs",
+        "beschrijving": "*.be/sites/*/files — Drupal-gemeenten met directe PDF-links",
+        "scraper": "scraper_drupal.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "green",
     },
     "overig": {
         "label": "Overig (aangepaste site)",
@@ -193,6 +243,18 @@ def detecteer_type(url: str) -> str:
         return "deliberations"
     if "publi.irisnet.be" in u:
         return "irisnet"
+    if "bruxelles.be" in u or "brussel.be" in u:
+        return "brussel"
+    if "forest.brussels" in u:
+        return "forest"
+    if "molenbeek.irisnet.be" in u:
+        return "molenbeek"
+    if "1030.be" in u:
+        return "schaerbeek"
+    if "/file/download" in u:
+        return "icordis"
+    if re.search(r"/sites/[^/]+/files", u):
+        return "drupal"
     return "overig"
 
 
