@@ -76,27 +76,73 @@ Scrapers gebouwd in `scraper_wordpress.py` (7/9 gemeenten):
 - Büllingen: Sucuri WAF, niet scrapbaar
 - Amel: TYPO3, slechts 1 document per type zichtbaar, overig
 
-### 4. Nog te onderzoeken / te bouwen — **13 SP**
-- [ ] Essen (PaddleCMS) — correcte URL zoeken
-- [ ] Destelbergen (Notubiz) — nagaan of publiek toegankelijk
-- [ ] Dessel (Icordis, onvolledig) — te weinig data, skip?
-- [ ] Pelt (SSL-probleem) — TLS workaround
-- [ ] Boechout, Sint-Genesius-Rode, Vleteren, Stekene, Damme, Zoersel, Voeren, Zuienkerke, Liedekerke — nog niet onderzocht of geen docs gevonden
-- [ ] Heers (OnlineSmartCities) — platform tijdelijk down, retry
+### 4. Resterende gemeenten zonder scraper (75)
 
-### 4. Code-kwaliteit (🟡 nice-to-have) — **8 SP**
+#### Vlaams (18 gemeenten)
+
+**Cobra-platform** (2):
+- Dendermonde — `dendermonde.be/cobra/gemeenteraad`
+- Evergem — `evergem.be/cobra/Gemeenteraad`
+
+**Drupal** (1):
+- Liedekerke — `liedekerke.be/system/files`
+
+**Nomatron** (1):
+- Oosterzele — `oosterzele.cdn.nomatron.be`
+
+**Mebosoft** (1):
+- Zuienkerke — `mebosoft.be/zuienkerke_gemeente`
+
+**Specifieke pagina gevonden** (4):
+- Baarle-Hertog — `baarle-hertog.be/bekendmakingen`
+- Vleteren — `vleteren.be/bestuur/informatie-en-inspraak/openbaarheid-van-bestuur`
+- Voeren — `voeren.be/upload/pdf`
+- Wielsbeke — `wielsbeke.be/agendas-en-verslagen`
+
+**Nog te onderzoeken** (9):
+- Boechout, Damme, Destelbergen, Essen, Stekene — alleen homepage-URL in CSV
+- Heers — was OnlineSmartCities, platform lag eerder down
+- Herstappe — kleinste gemeente van België (~85 inwoners)
+- Linkebeek, Sint-Genesius-Rode — faciliteitengemeenten
+
+#### Brussel (2 gemeenten)
+- Koekelberg — MediaWiki, JS-rendered → niet scrapbaar
+- Woluwe-Saint-Pierre — WordPress, geen documenten gevonden
+
+#### Duitstalig (2 gemeenten)
+- Amel — TYPO3, slechts 1 document per type zichtbaar
+- Büllingen — Sucuri WAF (JS-challenge) → niet scrapbaar
+
+#### Waals (53 gemeenten)
+
+**Specifieke pagina gevonden** (3):
+- Amay — `amay.be/ma-commune/vie-politique/conseil-communal/pv-et-resumes-du-conseil/proces-verbaux`
+- Anhée — `anhee.be/ma-commune/vie-politique/conseil-communal`
+- Ans — `ans-ville.be/ma-ville/vie-politique/conseil-communal/proces-verbaux`
+
+**Homepage-only — nog te onderzoeken** (50):
+Antoing, Aubange, Aywaille, Bassenge, Beauvechain, Bernissart, Bièvre,
+Brugelette, Burdinne, Chaudfontaine, Chièvres, Crisnée, Esneux, Fernelmont,
+Flobecq, Floreffe, Fosses-la-Ville, Gedinne, Gesves, Gouvy, Hastière,
+Herbeumont, Herve, Hotton, Jodoigne, La Louvière, Leuze-en-Hainaut,
+Libramont-Chevigny, Messancy, Modave, Mont-de-l'Enclus, Musson, Neufchâteau,
+Neupré, Orp-Jauche, Ouffet, Pecq, Plombières, Rumes, Saint-Nicolas, Silly,
+Soumagne, Tenneville, Tintigny, Trooz, Vaux-sur-Sûre, Verlaine,
+Villers-le-Bouillet, Visé, Waterloo
+
+### 5. Code-kwaliteit (🟡 nice-to-have) — **8 SP**
 - [ ] Refactor naar class-based scrapers i.p.v. module-level globals (SESSION, _config) — **3 SP**
 - [ ] HTML-generatie centraliseren in een gedeelde output-module — **2 SP**
 - [ ] Playwright timeout-handling verbeteren in scraper.py en scraper_halle.py — **1 SP**
 - [ ] Download-resumability toevoegen (file-size check vóór skip) — **2 SP**
 
-### 5. Testing — **8 SP**
+### 6. Testing — **8 SP**
 - [ ] Unit tests schrijven voor base_scraper.py (sanitize_filename, robust_get, download_document) — **3 SP**
 - [ ] Integratietests per scraper-type (mock HTTP responses) — **5 SP**
 
-### 6. ~~Provincie Antwerpen~~ ✅ Opgelost
+### 7. ~~Provincie Antwerpen~~ ✅ Opgelost
 
-### 7. ~~CSV completeren (565 gemeenten)~~ ✅ Opgelost
+### 8. ~~CSV completeren (565 gemeenten)~~ ✅ Opgelost
 
 ### 8. ~~Pubcon-gemeenten (Laakdal, Oudsbergen)~~ ✅ Opgelost
 
