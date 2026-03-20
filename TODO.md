@@ -23,27 +23,27 @@
 
 ## Openstaande taken
 
-### 1. Irisnet-scraper (8 Brusselse gemeenten)
+### 1. Irisnet-scraper (8 Brusselse gemeenten) — **8 SP**
 - Platform: `publi.irisnet.be`
 - Gemeenten: Anderlecht, Berchem-Sainte-Agathe, Brussel-Bruxelles, Forest, Molenbeek-Saint-Jean, Saint-Josse-ten-Noode, Schaerbeek, Woluwe-Saint-Lambert
 - **Actie:** Onderzoek de API/HTML-structuur van publi.irisnet.be en bouw scraper
 
-### 2. Overige 119 gemeenten onderzoeken
+### 2. Overige 119 gemeenten onderzoeken — **13 SP**
 - Dit zijn allemaal individuele websites (geen gedeeld platform)
 - Veel Waalse gemeenten met eigen website (www.amay.be, www.anhee.be, etc.)
 - Enkele Vlaamse: Blankenberge, Boechout, Bilzen-Hoeselt, Baarle-Hertog
 - Duitstalige gemeenten: Amel, Burg-Reuland, Büllingen, Eupen, Kelmis, etc.
 - **Actie:** Onderzoek per gemeente of er een publicatieplatform is; groepeer waar mogelijk
 
-### 3. Code-kwaliteit (🟡 nice-to-have)
-- [ ] Refactor naar class-based scrapers i.p.v. module-level globals (SESSION, _config)
-- [ ] HTML-generatie centraliseren in een gedeelde output-module
-- [ ] Playwright timeout-handling verbeteren in scraper.py en scraper_halle.py
-- [ ] Download-resumability toevoegen (file-size check vóór skip)
+### 3. Code-kwaliteit (🟡 nice-to-have) — **8 SP**
+- [ ] Refactor naar class-based scrapers i.p.v. module-level globals (SESSION, _config) — **3 SP**
+- [ ] HTML-generatie centraliseren in een gedeelde output-module — **2 SP**
+- [ ] Playwright timeout-handling verbeteren in scraper.py en scraper_halle.py — **1 SP**
+- [ ] Download-resumability toevoegen (file-size check vóór skip) — **2 SP**
 
-### 4. Testing
-- [ ] Unit tests schrijven voor base_scraper.py (sanitize_filename, robust_get, download_document)
-- [ ] Integratietests per scraper-type (mock HTTP responses)
+### 4. Testing — **8 SP**
+- [ ] Unit tests schrijven voor base_scraper.py (sanitize_filename, robust_get, download_document) — **3 SP**
+- [ ] Integratietests per scraper-type (mock HTTP responses) — **5 SP**
 
 ### 5. ~~Provincie Antwerpen~~ ✅ Opgelost
 - Oude URL (echo.provincieantwerpen.be) was dood → nieuwe bron gevonden
