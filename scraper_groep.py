@@ -13,6 +13,7 @@ Ondersteunde types:
   deliberations    deliberations.be · conseilcommunal.be                    (HTML/PDF)
   irisnet          publi.irisnet.be                                         (geen scraper)
   icordis          *.be/file/download — Icordis CMS (LCP nv)               (HTML/PDF)
+  wordpress        */wp-content/uploads* · www.st.vith.be                   (HTML/PDF)
   drupal           *.be/sites/*/files — Drupal direct PDF                   (HTML/PDF)
   ixelles          www.ixelles.be — Ixelles conseil communal                (HTML/PDF)
   overig           Andere bekende sites                                     (handmatig)
@@ -183,6 +184,14 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": False,
         "kleur": "green",
     },
+    "wordpress": {
+        "label": "WordPress (Duitstalige gemeenten)",
+        "beschrijving": "*/wp-content/uploads* · www.st.vith.be — WordPress/Plone",
+        "scraper": "scraper_wordpress.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "blue",
+    },
     "ixelles": {
         "label": "Ixelles / Elsene",
         "beschrijving": "www.ixelles.be — conseil communal ODJ & PV",
@@ -262,6 +271,8 @@ def detecteer_type(url: str) -> str:
         return "schaerbeek"
     if "/file/download" in u:
         return "icordis"
+    if "/wp-content/uploads" in u or "www.st.vith.be" in u:
+        return "wordpress"
     if re.search(r"/sites/[^/]+/files", u):
         return "drupal"
     if "www.ixelles.be" in u:

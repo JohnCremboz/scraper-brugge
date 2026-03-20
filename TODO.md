@@ -2,7 +2,7 @@
 
 ## Huidige status (19 maart 2026)
 
-**Dekking:** ~487/565 gemeenten hebben een werkende scraper (~86%)
+**Dekking:** ~494/565 gemeenten hebben een werkende scraper (~87%)
 **CSV:** 575 rijen = 10 provincies + 565 gemeenten (compleet, matcht Wikipedia)
 
 | Type | Aantal | Scraper | Status |
@@ -17,6 +17,7 @@
 | **Irisnet (Brussel — 10 gem.)** | **10** | scraper_irisnet.py | ✅ Klaar |
 | iBabs | 2 | scraper_ibabs.py | ✅ Klaar |
 | **Ixelles / Elsene** | **1** | scraper_ixelles.py | ✅ Klaar |
+| **WordPress/Plone (Duitstalige gem.)** | **7** | scraper_wordpress.py | ✅ Klaar |
 | Prov. Antwerpen | 1 | scraper_provantwerpen.py | ✅ Klaar |
 | Vlaams-Brabant | 1 | scraper_vlaamsbrabant.py | ✅ Klaar |
 | Ingelmunster | 1 | scraper_ingelmunster.py | ✅ Klaar |
@@ -24,7 +25,7 @@
 | Forest | 1 | scraper_forest.py | ✅ Klaar |
 | Molenbeek-Saint-Jean | 1 | scraper_molenbeek.py | ✅ Klaar |
 | Schaerbeek | 1 | scraper_schaerbeek.py | ✅ Klaar |
-| **Overig (individueel)** | **~80** | — | ❌ Geen scraper |
+| **Overig (individueel)** | **~71** | — | ❌ Geen scraper |
 
 **Brusselse status:**
 | Gemeente | Platform | Status |
@@ -40,6 +41,19 @@
 | Koekelberg | koekelberg.be (MediaWiki) | ❌ JS-rendered |
 | Woluwe-Saint-Pierre | woluwe1150.be (WordPress) | ❌ Geen documenten |
 
+**Duitstalige gemeenten (DG) — status:**
+| Gemeente | Platform | Status |
+|----------|----------|--------|
+| Bütgenbach | WordPress | ✅ scraper_wordpress.py |
+| Kelmis | WordPress | ✅ scraper_wordpress.py |
+| Lontzen | WordPress | ✅ scraper_wordpress.py |
+| Raeren | WordPress + static.raeren.be CDN | ✅ scraper_wordpress.py |
+| Burg-Reuland | WordPress | ✅ scraper_wordpress.py |
+| Eupen | WordPress | ✅ scraper_wordpress.py |
+| Sankt Vith | Plone (www.st.vith.be) | ✅ scraper_wordpress.py |
+| Büllingen | Sucuri WAF (JS-challenge) | ❌ Niet scrapbaar |
+| Amel | TYPO3 (1 doc per type zichtbaar) | ❌ Overig |
+
 ---
 
 ## Openstaande taken
@@ -53,7 +67,15 @@
 - **Drupal**: Auderghem, Uccle → `scraper_drupal.py`
 - **Niet scrapbaar**: Koekelberg (MediaWiki, JS), Woluwe-Saint-Pierre (WordPress, geen documenten)
 
-### 3. Nog te onderzoeken / te bouwen — **13 SP**
+### 3. Duitstalige gemeenten — **✅ Opgelost**
+
+Scrapers gebouwd in `scraper_wordpress.py` (7/9 gemeenten):
+- Bütgenbach, Kelmis, Lontzen, Raeren, Burg-Reuland, Eupen → WordPress
+- Sankt Vith → Plone (www.st.vith.be), jaarpagina-navigatie
+- Büllingen: Sucuri WAF, niet scrapbaar
+- Amel: TYPO3, slechts 1 document per type zichtbaar, overig
+
+### 4. Nog te onderzoeken / te bouwen — **13 SP**
 - [ ] Essen (PaddleCMS) — correcte URL zoeken
 - [ ] Destelbergen (Notubiz) — nagaan of publiek toegankelijk
 - [ ] Dessel (Icordis, onvolledig) — te weinig data, skip?
@@ -105,6 +127,7 @@ scraper-brugge/
 ├── scraper_schaerbeek.py    # Schaerbeek (1030.be, via sitemap)
 ├── scraper_icordis.py       # Icordis CMS — 7 Vlaamse gem. (*/file/download)
 ├── scraper_drupal.py        # Drupal direct PDF — 8 gem. (*/sites/*/files) incl. Auderghem, Uccle
+├── scraper_wordpress.py     # WordPress/Plone — 7 Duitstalige gem. (*/wp-content/uploads*)
 ├── scraper_ixelles.py       # Ixelles / Elsene (conseil communal ODJ + PV)
 ├── compare_wiki.py          # Vergelijking CSV vs Wikipedia (565 gem.)
 ├── simba-source.csv         # Bronlijst 575 rijen (10 provincies + 565 gemeenten)
