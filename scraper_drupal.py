@@ -3,7 +3,7 @@ Scraper voor Drupal-gemeenten met directe PDF-links.
 
 Ondersteunde gemeenten:
   Dilbeek, Knokke-Heist, Rijkevorsel, Willebroek, Wervik, Putte,
-  Auderghem, Uccle, Laakdal
+  Auderghem, Uccle, Laakdal, Destelbergen, Essen
 
 URL-patroon in simba-source.csv: */sites/default/files* of */sites/*/files*
 
@@ -48,7 +48,9 @@ BASE_URL = ""
 #   en halen we daar de PDFs op.
 # pdf_re: patroon om PDF-links te herkennen (default: /sites/*/files/*.pdf)
 
-_DRUPAL_PDF_RE = re.compile(r"/sites/[^/]+/files/.*\.pdf", re.IGNORECASE)
+_DRUPAL_PDF_RE = re.compile(
+    r"(?:/sites/[^/]+/files/|/system/files/).*\.pdf", re.IGNORECASE
+)
 
 GEMEENTEN: dict[str, dict] = {
     "www.dilbeek.be": {
@@ -97,6 +99,28 @@ GEMEENTEN: dict[str, dict] = {
     "www.laakdal.be": {
         "naam": "Laakdal",
         "listing_pad": "/notulen-gemeenteraad",
+    },
+    "www.destelbergen.be": {
+        "naam": "Destelbergen",
+        "listing_pad": (
+            "/bestuur/reglementen-besluiten"
+            "?f%5B0%5D=reglementen-besluiten-orgaan%3A649"
+        ),
+        "vergadering_re": re.compile(
+            r"^/(?:"
+            r"agenda-gemeenteraad|notulen-gemeenteraad|besluitenlijst-gemeenteraad"
+            r"|goedkeuring-|belasting|subsidiereglement|reglement-|bijzondere-"
+            r"|algemene-|huishoudelijk-|node/\d+"
+            r"|bestuur/reglementen-besluiten/(?!klacht)"
+            r")"
+        ),
+        "pagina_max": 9,
+    },
+    "www.essen.be": {
+        "naam": "Essen",
+        "listing_pad": "/besluiten-bekendmakingen-en-zittingsdocumenten",
+        "vergadering_re": re.compile(r"/\d{8}-gemeente"),
+        "pagina_max": 9,
     },
 }
 
@@ -193,12 +217,16 @@ def _pdfs_van_html(html: str, base: str) -> list[dict]:
 
 def _vergadering_links_van_html(html: str, patroon: re.Pattern) -> list[str]:
     """Verzamel vergadering-detailpagina-links uit HTML."""
+    base_netloc = urlparse(BASE_URL).netloc
     soup = BeautifulSoup(html, "lxml")
     gezien: set[str] = set()
     resultaat: list[str] = []
     for a in soup.find_all("a", href=True):
         href = a["href"].split("?")[0].split("#")[0]
         parsed = urlparse(href)
+        # Externe links (andere netloc) altijd overslaan
+        if parsed.scheme and parsed.netloc and parsed.netloc != base_netloc:
+            continue
         pad = parsed.path
         if patroon.search(pad) and pad not in gezien:
             gezien.add(pad)
@@ -275,11 +303,22 @@ def scrape_gemeente(
                 paginas.append((r.text, jaar_url))
     elif vergadering_re:
         # Listing → vergadering-detailpagina's → PDFs
-        verg_urls = _vergadering_links_van_html(html, vergadering_re)
-        for verg_url in verg_urls:
-            r = _get(verg_url)
+        # Optionele paginering: pagina_max geeft het max. paginanummer (0-gebaseerd)
+        pagina_max = config.get("pagina_max", 0)
+        listing_htmls = [(html, listing_url)]
+        sep = "&" if "?" in listing_url else "?"
+        for pagina_nr in range(1, pagina_max + 1):
+            r = _get(f"{listing_url}{sep}page={pagina_nr}")
             if r and r.status_code == 200:
-                paginas.append((r.text, verg_url))
+                listing_htmls.append((r.text, f"{listing_url}{sep}page={pagina_nr}"))
+        gezien_verg: set[str] = set()
+        for listing_html, _ in listing_htmls:
+            for verg_url in _vergadering_links_van_html(listing_html, vergadering_re):
+                if verg_url not in gezien_verg:
+                    gezien_verg.add(verg_url)
+                    r = _get(verg_url)
+                    if r and r.status_code == 200:
+                        paginas.append((r.text, verg_url))
     else:
         # Directe PDFs op listing-pagina
         paginas = [(html, listing_url)]
