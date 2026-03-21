@@ -15,8 +15,9 @@ Ondersteunde types:
   icordis          *.be/file/download — Icordis CMS (LCP nv)               (HTML/PDF)
   pubcon           app-pubcon-*.azurewebsites.net/LBLOD                     (HTML/PDF)
   wordpress        */wp-content/uploads* · www.st.vith.be                   (HTML/PDF)
-  drupal           *.be/sites/*/files — Drupal direct PDF                   (HTML/PDF)
-  ixelles          www.ixelles.be — Ixelles conseil communal                (HTML/PDF)
+  docodis          *.be/AC-file/docodis — Docodis documentbeheer CMS        (HTML/PDF)
+  linkebeek        *.be/download.ashx — LCP agenda-notulen portaal          (HTML/PDF)
+  drupal           *.be/sites/*/files of *.be/system/files — Drupal direct PDF   (HTML/PDF)
   overig           Andere bekende sites                                     (handmatig)
   leeg             Geen URL beschikbaar
 
@@ -177,6 +178,22 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": False,
         "kleur": "bright_green",
     },
+    "docodis": {
+        "label": "Docodis",
+        "beschrijving": "*.be/AC-file/docodis — Docodis documentbeheer CMS",
+        "scraper": "scraper_docodis.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "magenta",
+    },
+    "linkebeek": {
+        "label": "LCP agenda-notulen portaal",
+        "beschrijving": "*/download.ashx — LCP gemeenteportaal (Linkebeek)",
+        "scraper": "scraper_linkebeek.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "cyan",
+    },
     "drupal": {
         "label": "Drupal directe PDFs",
         "beschrijving": "*.be/sites/*/files — Drupal-gemeenten met directe PDF-links",
@@ -186,12 +203,20 @@ TYPES: dict[str, dict] = {
         "kleur": "green",
     },
     "wordpress": {
-        "label": "WordPress (Duitstalige gemeenten)",
-        "beschrijving": "*/wp-content/uploads* · www.st.vith.be — WordPress/Plone",
+        "label": "WordPress / Plone gemeenten",
+        "beschrijving": "*/wp-content/uploads* · www.st.vith.be · Waalse Plone-gemeenten — WordPress/Plone",
         "scraper": "scraper_wordpress.py",
         "heeft_browser": False,
         "heeft_agendapunten": False,
         "kleur": "blue",
+    },
+    "idelibe": {
+        "label": "iDélibé (conseilcommunal.be)",
+        "beschrijving": "conseilcommunal.be/commune/{id} — 39 Waalse gemeenten (PV + notes de synthèse)",
+        "scraper": "scraper_idelibe.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_cyan",
     },
     "pubcon": {
         "label": "Pubcon (Tobibus LBLOD)",
@@ -240,6 +265,30 @@ STIJL = Style([
 
 
 # ---------------------------------------------------------------------------
+# Waalse WordPress/Plone-gemeenten — scraper_wordpress.py via hostname
+_WAALSE_WP_HOSTS: frozenset[str] = frozenset({
+    "www.bernissart.be", "www.floreffe.be", "www.waterloo.be",
+    "www.fernelmont.be", "www.chievres.be", "www.verlaine.be",
+    "www.brugelette.be", "www.fosses-la-ville.be", "www.pecq.be",
+    "www.herbeumont.be", "www.lalouviere.be", "www.rumes.be",
+    "www.antoing.net", "www.ans-ville.be", "www.aubange.be",
+    "www.burdinne.be",
+    "www.crisnee.be",
+    "www.gesves.be",
+    "montdelenclus.be",
+    "www.orp-jauche.be",
+    "www.trooz.be",
+    "www.vaux-sur-sure.be",
+    "www.hastiere.be",
+})
+
+# iDélibé commune ID's (www.conseilcommunal.be/commune/{id})
+_IDELIBE_COMMUNE_IDS: frozenset[int] = frozenset({
+    2, 8, 9, 10, 12, 13, 14, 16, 17, 18, 22, 26, 28, 29, 37, 40,
+    41, 44, 46, 53, 58, 63, 64, 65, 66, 67, 68, 69, 70, 72, 78,
+    80, 83, 92, 93, 97, 98, 99, 104,
+})
+
 # URL-type detectie
 # ---------------------------------------------------------------------------
 
@@ -266,6 +315,10 @@ def detecteer_type(url: str) -> str:
         return "vlaamsbrabant"
     if "provincieantwerpen.be" in u and "provincieraad" in u:
         return "provantwerpen"
+    # iDélibé must come before the broad deliberations check (both use conseilcommunal.be)
+    m = re.search(r"conseilcommunal\.be/commune/(\d+)", u)
+    if m and int(m.group(1)) in _IDELIBE_COMMUNE_IDS:
+        return "idelibe"
     if "deliberations.be" in u or "conseilcommunal.be" in u:
         return "deliberations"
     if "publi.irisnet.be" in u:
@@ -282,10 +335,17 @@ def detecteer_type(url: str) -> str:
         return "icordis"
     if "app-pubcon-" in u and "azurewebsites.net" in u:
         return "pubcon"
-    if "/wp-content/uploads" in u or "www.st.vith.be" in u:
+    if "/wp-content/uploads" in u or "www.st.vith.be" in u or "/app/uploads" in u or "/fileadmin/gemeinde_amel" in u or "/pv-et-resumes-du-conseil" in u or "@@folder_listing" in u:
         return "wordpress"
-    if re.search(r"/sites/[^/]+/files", u):
+    # Waalse WordPress/Plone-gemeenten op hostname
+    if urlparse(url).netloc.lower() in _WAALSE_WP_HOSTS:
+        return "wordpress"
+    if re.search(r"/sites/[^/]+/files", u) or "/system/files" in u:
         return "drupal"
+    if "/ac-file/docodis" in u:
+        return "docodis"
+    if "/download.ashx" in u:
+        return "linkebeek"
     if "www.ixelles.be" in u:
         return "ixelles"
     return "overig"
