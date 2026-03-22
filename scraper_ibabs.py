@@ -281,67 +281,24 @@ def haal_vergadering_details(vergadering: dict, base_url: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def genereer_html(gemeente_naam: str, vergaderingen: list[dict], output_dir: Path) -> Path:
+    from html_output import agendapunten_html, doc_badges_html, genereer_html_tabel
     html_path = output_dir.parent / f"{sanitize_filename(gemeente_naam)}.html"
-
-    rijen = []
-    for v in vergaderingen:
-        ap_html = ""
-        if v.get("agendapunten"):
-            items = "".join(f"<li>{ap['titel']}</li>" for ap in v["agendapunten"])
-            ap_html = f"<ul class='agendapunten'>{items}</ul>"
-
-        doc_html = ""
-        if v.get("documenten"):
-            badges = []
-            for doc in v["documenten"]:
-                if doc.get("local_file"):
-                    rel = Path(doc["local_file"]).relative_to(output_dir.parent)
-                    badges.append(f"<a class='doc-link' href='{rel}'>{doc['naam']}</a>")
-                else:
-                    badges.append(
-                        f"<a class='doc-link' href='{doc['url']}' target='_blank'>{doc['naam']}</a>"
-                    )
-            doc_html = f"<div class='documenten'>{''.join(badges)}</div>"
-
-        rijen.append(f"""
-        <tr>
-            <td>{v['datum']}</td>
-            <td>{v['titel']}</td>
-            <td>{ap_html}</td>
-            <td>{doc_html}</td>
-        </tr>""")
-
-    html = f"""<!DOCTYPE html>
-<html lang="nl">
-<head>
-<meta charset="utf-8">
-<title>Vergaderingen {gemeente_naam} – iBabs</title>
-<style>
-  body {{ font-family: sans-serif; margin: 2rem; }}
-  h1 {{ color: #003366; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ border: 1px solid #ccc; padding: .5rem .75rem; vertical-align: top; }}
-  th {{ background: #003366; color: white; }}
-  tr:nth-child(even) {{ background: #f5f5f5; }}
-  .agendapunten {{ margin: 0; padding-left: 1.2rem; font-size: .85rem; }}
-  .documenten {{ display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .4rem; }}
-  .doc-link {{ background: #e8f0fe; border: 1px solid #4285f4; border-radius: 3px;
-               padding: 2px 6px; font-size: .8rem; text-decoration: none; color: #1a0dab; }}
-  .doc-link:hover {{ background: #d2e3fc; }}
-</style>
-</head>
-<body>
-<h1>Vergaderingen {gemeente_naam}</h1>
-<p>Bron: iBabs Publieksportaal — {len(vergaderingen)} vergadering(en)</p>
-<table>
-  <thead><tr><th>Datum</th><th>Orgaan</th><th>Agendapunten</th><th>Documenten</th></tr></thead>
-  <tbody>{''.join(rijen)}</tbody>
-</table>
-</body>
-</html>"""
-
-    html_path.write_text(html, encoding="utf-8")
-    return html_path
+    rijen = [
+        [
+            v["datum"],
+            v["titel"],
+            agendapunten_html(v.get("agendapunten", [])),
+            doc_badges_html(v.get("documenten", []), html_path),
+        ]
+        for v in vergaderingen
+    ]
+    return genereer_html_tabel(
+        naam=gemeente_naam,
+        bron="iBabs Publieksportaal",
+        kolommen=["Datum", "Orgaan", "Agendapunten", "Documenten"],
+        rijen=rijen,
+        output_pad=html_path,
+    )
 
 
 # ---------------------------------------------------------------------------

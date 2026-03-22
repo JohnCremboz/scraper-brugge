@@ -10,6 +10,8 @@ Ondersteunde types:
   lblod            lblod.*.be                                               (HTML/PDF)
   ibabs            *.bestuurlijkeinformatie.nl                              (HTML/PDF)
   vlaamsbrabant    bestuur.vlaamsbrabant.be                                 (HTML)
+  hainaut          www.hainaut.be — Conseil provincial                      (HTML)
+  luxemburg        province.luxembourg.be — Conseil provincial              (HTML)
   deliberations    deliberations.be · conseilcommunal.be                    (HTML/PDF)
   irisnet          publi.irisnet.be                                         (geen scraper)
   icordis          *.be/file/download — Icordis CMS (LCP nv)               (HTML/PDF)
@@ -61,7 +63,7 @@ TYPES: dict[str, dict] = {
     "smartcities": {
         "label": "OnlineSmartCities / Besluitvorming",
         "beschrijving": "raadpleeg-*.onlinesmartcities.be · besluitvorming.*.be",
-        "scraper": "scraper_halle.py",
+        "scraper": "scraper_onlinesmartcities.py",
         "heeft_browser": True,
         "heeft_agendapunten": True,
         "kleur": "cyan",
@@ -84,8 +86,8 @@ TYPES: dict[str, dict] = {
     },
     "ingelmunster": {
         "label": "Ingelmunster bekendmakingen",
-        "beschrijving": "www.ingelmunster.be/db_files_2",
-        "scraper": "scraper_ingelmunster.py",
+        "beschrijving": "www.ingelmunster.be/db_files_2 (TYPO3)",
+        "scraper": "scraper_drupal.py",
         "heeft_browser": False,
         "heeft_agendapunten": False,
         "kleur": "bright_blue",
@@ -122,6 +124,30 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": False,
         "kleur": "bright_green",
     },
+    "hainaut": {
+        "label": "Provincie Henegouwen",
+        "beschrijving": "hainaut.be — Conseil provincial (ODJ, délibérations, communiqués)",
+        "scraper": "scraper_waalse_provincies.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_green",
+    },
+    "luxemburg": {
+        "label": "Provincie Luxemburg",
+        "beschrijving": "province.luxembourg.be — Conseil provincial (ODJ & procès-verbaux)",
+        "scraper": "scraper_waalse_provincies.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_green",
+    },
+    "brabantwallon": {
+        "label": "Provincie Waals-Brabant",
+        "beschrijving": "brabantwallon.be — Conseil provincial (procès-verbaux)",
+        "scraper": "scraper_waalse_provincies.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_green",
+    },
     "deliberations": {
         "label": "Deliberations.be / ConseilCommunal.be",
         "beschrijving": "deliberations.be · conseilcommunal.be — Waalse gemeenten",
@@ -149,7 +175,7 @@ TYPES: dict[str, dict] = {
     "forest": {
         "label": "Forest / Vorst",
         "beschrijving": "forest.brussels — conseil communal publicaties",
-        "scraper": "scraper_forest.py",
+        "scraper": "scraper_drupal.py",
         "heeft_browser": False,
         "heeft_agendapunten": False,
         "kleur": "bright_yellow",
@@ -315,6 +341,12 @@ def detecteer_type(url: str) -> str:
         return "vlaamsbrabant"
     if "provincieantwerpen.be" in u and "provincieraad" in u:
         return "provantwerpen"
+    if "www.hainaut.be" in u:
+        return "hainaut"
+    if "province.luxembourg.be" in u:
+        return "luxemburg"
+    if "brabantwallon.be" in u:
+        return "brabantwallon"
     # iDélibé must come before the broad deliberations check (both use conseilcommunal.be)
     m = re.search(r"conseilcommunal\.be/commune/(\d+)", u)
     if m and int(m.group(1)) in _IDELIBE_COMMUNE_IDS:
@@ -425,9 +457,17 @@ def bouw_commando(
     output_pad = str(Path(output_basis) / slug)
 
     cmd = ["uv", "run", "python", scraper]
-    cmd += ["--base-url", gemeente["base_url"]]
+    # Voor scrapers waar de gemeente-identiteit in het URL-pad zit (bijv. deliberations.be/{slug}),
+    # is de volledige URL nodig; voor alle andere scrapers volstaat base_url (schema+netloc).
+    cmd += ["--base-url", gemeente["url"] if type_ == "deliberations" else gemeente["base_url"]]
 
-    if orgaan:
+    # irisnet heeft één scraper voor alle Brusselse gemeenten; --alle zou alle 10 scrapen.
+    # Geef dus altijd --gemeente mee zodat enkel de gevraagde gemeente gescraped wordt.
+    if type_ == "irisnet":
+        if orgaan:
+            cmd += ["--orgaan", orgaan]
+        cmd += ["--gemeente", gemeente["gemeente"]]
+    elif orgaan:
         cmd += ["--orgaan", orgaan]
     else:
         cmd += ["--alle"]

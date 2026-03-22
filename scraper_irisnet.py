@@ -3,10 +3,10 @@ Scraper voor Irisnet (publi.irisnet.be) — Brusselse gemeenten.
 
 Plaform: Editoria e-publications van gemeenten in het Brussels Gewest.
 API-structuur:
-  /web/organizations           → lijst van organisaties met vipKeys
-  /web/categoryContent?vipKey= → mappen (top-level) van een organisatie
-  /web/categoryComplete?vipKey=→ items (datum-mappen of publicaties) in een map
-  /web/download?pubKey=        → bestand downloaden
+  /web/organizations           -> lijst van organisaties met vipKeys
+  /web/categoryContent?vipKey= -> mappen (top-level) van een organisatie
+  /web/categoryComplete?vipKey=-> items (datum-mappen of publicaties) in een map
+  /web/download?pubKey=        -> bestand downloaden
 
 Gebruik:
     uv run python scraper_irisnet.py --gemeente Anderlecht --maanden 12
@@ -161,8 +161,11 @@ def haal_mappen(org_key: str) -> list[dict]:
 def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
     """Haal datum-items op in een map die op of na grensdatum vallen.
 
+    Verwerkt zowel platte structuren (tekst = ISO-datum) als geneste structuren
+    met een tussenliggend jaar-niveau (bijv. Jette: map → jaarmap → sessie).
+
     Yields:
-        Dicts met 'key' en 'datum' (date-object).
+        Dicts met 'key', 'datum' (date-object) en optioneel 'label'.
     """
     r = _get(f"{BASE_URL}/web/categoryComplete", params={"vipKey": folder_key})
     if not r or r.status_code != 200:
@@ -170,18 +173,50 @@ def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
 
     soup = BeautifulSoup(r.text, "html.parser")
     gezien: set[str] = set()
+
     for el in soup.find_all(True):
         bk = el.get("data-bk")
         if not bk or bk == folder_key or bk in gezien:
             continue
         gezien.add(bk)
         tekst = el.get_text(strip=True)
+
+        # ── Jaarmap (bijv. "2024", "2025") → recursief inladen ─────────────
+        if re.fullmatch(r"\d{4}", tekst):
+            jaar = int(tekst)
+            if jaar >= grensdatum.year:
+                yield from haal_datum_items(bk, grensdatum)
+            continue
+
+        # ── Directe ISO-datum (bijv. "2025-01-29") ─────────────────────────
         try:
             item_datum = date.fromisoformat(tekst)
-        except ValueError:
+            if item_datum >= grensdatum:
+                yield {"key": bk, "datum": item_datum, "label": tekst}
             continue
-        if item_datum >= grensdatum:
-            yield {"key": bk, "datum": item_datum}
+        except ValueError:
+            pass
+
+        # ── Datum achteraan in sessiebeschrijving (bijv. "Council of 2025-01-29") ──
+        m = re.search(r"(\d{4}-\d{2}-\d{2})$", tekst)
+        if m:
+            try:
+                item_datum = date.fromisoformat(m.group(1))
+                if item_datum >= grensdatum:
+                    yield {"key": bk, "datum": item_datum, "label": tekst}
+                continue
+            except ValueError:
+                pass
+
+        # ── Datum in DD-MM-YYYY-formaat (bijv. "Council of 27-01-2016") ────
+        m = re.search(r"(\d{2})-(\d{2})-(\d{4})$", tekst)
+        if m:
+            try:
+                item_datum = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+                if item_datum >= grensdatum:
+                    yield {"key": bk, "datum": item_datum, "label": tekst}
+            except ValueError:
+                pass
 
 
 def haal_publicaties(item_key: str) -> list[dict]:
@@ -233,85 +268,14 @@ def haal_publicaties(item_key: str) -> list[dict]:
 
 def _genereer_html(gemeente: str, docs: list[dict], output_dir: Path) -> None:
     """Genereer een HTML-indexpagina voor alle gevonden documenten."""
+    from html_output import genereer_html_kaarten
     html_path = output_dir / f"{sanitize_filename(gemeente)}.html"
-
-    by_map: dict[str, list[dict]] = {}
-    for doc in docs:
-        by_map.setdefault(doc.get("map", "Overig"), []).append(doc)
-
-    secties_html = ""
-    for map_naam, map_docs in by_map.items():
-        gesorteerd = sorted(map_docs, key=lambda d: d.get("datum_item", ""), reverse=True)
-        kaarten = ""
-        for doc in gesorteerd:
-            titel = doc["titel"] or "(onbekende titel)"
-            datum_item = doc.get("datum_item", "")
-            pub_datum = doc.get("datum", "")
-            local = doc.get("local_path")
-            link_href = Path(local).name if local else doc["url"]
-            kaarten += f"""\
-<div class="doc-card">
-  <div class="doc-icon">📄</div>
-  <div class="doc-info">
-    <a href="{link_href}" class="doc-title">{titel}</a>
-    <div class="doc-meta">Vergadering: {datum_item} &nbsp;|&nbsp; Publicatiedatum: {pub_datum}</div>
-  </div>
-</div>
-"""
-        secties_html += f"""\
-<h2 class="section-title">{map_naam}</h2>
-<div class="doc-grid">
-{kaarten}</div>
-"""
-
-    html = f"""\
-<!DOCTYPE html>
-<html lang="nl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{gemeente} — Irisnet publicaties</title>
-  <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ font-family: Arial, sans-serif; background: #f4f6fb; color: #333; }}
-    .header {{ background: #1a237e; color: white; padding: 24px 32px; }}
-    .header h1 {{ font-size: 1.8em; margin-bottom: 6px; }}
-    .header p {{ opacity: 0.8; font-size: 0.95em; }}
-    .container {{ max-width: 1100px; margin: 24px auto; padding: 0 20px; }}
-    .section-title {{
-      color: #1a237e; font-size: 1.15em;
-      border-bottom: 2px solid #1a237e;
-      padding-bottom: 6px; margin: 28px 0 14px;
-    }}
-    .doc-grid {{ display: grid; gap: 10px; }}
-    .doc-card {{
-      background: white; border-radius: 6px; padding: 14px 16px;
-      display: flex; align-items: flex-start; gap: 12px;
-      box-shadow: 0 1px 3px rgba(0,0,0,.1);
-    }}
-    .doc-icon {{ font-size: 1.4em; flex-shrink: 0; margin-top: 2px; }}
-    .doc-title {{ color: #1a237e; font-weight: 600; text-decoration: none; }}
-    .doc-title:hover {{ text-decoration: underline; }}
-    .doc-meta {{ font-size: 0.83em; color: #777; margin-top: 4px; }}
-    .footer {{ text-align: center; padding: 28px; color: #aaa; font-size: 0.85em; }}
-    .footer a {{ color: #aaa; }}
-  </style>
-</head>
-<body>
-<div class="header">
-  <h1>📋 {gemeente}</h1>
-  <p>Publicaties via publi.irisnet.be — {len(docs)} document(en) gevonden</p>
-</div>
-<div class="container">
-{secties_html}
-</div>
-<div class="footer">
-  Bron: <a href="{BASE_URL}">{BASE_URL}</a>
-</div>
-</body>
-</html>
-"""
-    html_path.write_text(html, encoding="utf-8")
+    genereer_html_kaarten(
+        naam=gemeente,
+        bron_url=BASE_URL,
+        docs=docs,
+        output_pad=html_path,
+    )
     logger.info("HTML-index gegenereerd: %s", html_path)
 
 
@@ -325,6 +289,7 @@ def scrape_gemeente(
     output_dir: Path,
     maanden: int = 12,
     map_filter: str | None = None,
+    doc_filter: str | None = None,
 ) -> tuple[int, int]:
     """Scrape alle publicaties voor één gemeente.
 
@@ -334,6 +299,7 @@ def scrape_gemeente(
         output_dir:  Basismap voor downloads.
         maanden:     Terugkijkperiode in maanden.
         map_filter:  Optioneel: filter op mapnaam (substring, niet hoofdlettergevoelig).
+        doc_filter:  Optioneel: filter op documenttitel/bestandsnaam (substring).
 
     Returns:
         (totaal_geprobeerd, totaal_gedownload)
@@ -353,7 +319,7 @@ def scrape_gemeente(
 
     if map_filter:
         mappen = [m for m in mappen if map_filter.lower() in m["naam"].lower()]
-        logger.info("  Filter '%s' → %d map(pen) over", map_filter, len(mappen))
+        logger.info("  Filter '%s' -> %d map(pen) over", map_filter, len(mappen))
 
     alle_docs: list[dict] = []
     results: list[DownloadResult] = []
@@ -373,6 +339,9 @@ def scrape_gemeente(
             item_dir.mkdir(parents=True, exist_ok=True)
 
             for pub in publicaties:
+                # Sla over als documenttitel niet overeenkomt met doc_filter
+                if doc_filter and doc_filter.lower() not in (pub.get("titel") or "").lower():
+                    continue
                 hint = sanitize_filename(
                     f"{datum_str}_{pub['titel']}" if pub["titel"] else datum_str
                 )
@@ -448,7 +417,7 @@ def main() -> None:
             print(f"  {status}  {g['gemeente']}")
         print("\nAlle communes op publi.irisnet.be:")
         for naam in sorted(platform_keys):
-            print(f"  {naam}  →  {platform_keys[naam]}")
+            print(f"  {naam}  ->  {platform_keys[naam]}")
         sys.exit(0)
 
     if args.gemeente:
@@ -464,7 +433,8 @@ def main() -> None:
         sys.exit(1)
 
     output_dir = Path(args.output)
-    doc_filter = args.orgaan or args.document_filter or ("notulen" if args.notulen else None)
+    map_filter = args.orgaan or None
+    doc_filter = args.document_filter or ("notulen" if args.notulen else None)
 
     totaal_gevonden = 0
     totaal_gedownload = 0
@@ -478,7 +448,8 @@ def main() -> None:
             )
             continue
         gevonden, gedownload = scrape_gemeente(
-            g["gemeente"], org_key, output_dir, args.maanden, map_filter=doc_filter,
+            g["gemeente"], org_key, output_dir, args.maanden,
+            map_filter=map_filter, doc_filter=doc_filter,
         )
         totaal_gevonden += gevonden
         totaal_gedownload += gedownload

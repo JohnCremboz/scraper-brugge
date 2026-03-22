@@ -5,9 +5,9 @@ Ondersteunde gemeenten:
   Oudsbergen
 
 Navigatiestructuur:
-  /LBLOD → Zittingen → /Zitting/Details/{id} → Agendapunten
-  → /Agendapunt/Details/{id} → AgendaPuntItemDetails
-  → /Agendapunt/AgendaPuntItemDetails/{id} → blob PDF-links
+  /LBLOD -> Zittingen -> /Zitting/Details/{id} -> Agendapunten
+  -> /Agendapunt/Details/{id} -> AgendaPuntItemDetails
+  -> /Agendapunt/AgendaPuntItemDetails/{id} -> blob PDF-links
 
 Documenttypes (prefixen):
   N  = Notulen

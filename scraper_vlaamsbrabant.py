@@ -182,58 +182,25 @@ def haal_detail(publicatie: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def genereer_html(publicaties: list[dict], output_dir: Path) -> Path:
+    from html_output import agendapunten_html, genereer_html_tabel
     html_path = output_dir.parent / f"{sanitize_filename(NAAM)}.html"
-
-    rijen = []
-    for p in publicaties:
-        ap_html = ""
-        if p.get("agendapunten"):
-            items = "".join(
-                f"<li><strong>{ap['nr']}</strong> {ap['titel']}</li>"
-                for ap in p["agendapunten"]
-            )
-            ap_html = f"<ol class='agendapunten'>{items}</ol>"
-
-        rijen.append(f"""
-        <tr>
-            <td>{p['datum_tekst']}</td>
-            <td>{p['orgaan']}</td>
-            <td>{p['categorie']}</td>
-            <td><a href='{p['url']}' target='_blank'>{p['titel']}</a></td>
-            <td>{ap_html}</td>
-        </tr>""")
-
-    html = f"""<!DOCTYPE html>
-<html lang="nl">
-<head>
-<meta charset="utf-8">
-<title>{NAAM} – Publicaties</title>
-<style>
-  body {{ font-family: sans-serif; margin: 2rem; }}
-  h1 {{ color: #003366; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ border: 1px solid #ccc; padding: .5rem .75rem; vertical-align: top; }}
-  th {{ background: #003366; color: white; }}
-  tr:nth-child(even) {{ background: #f5f5f5; }}
-  .agendapunten {{ margin: 0; padding-left: 1.2rem; font-size: .85rem; }}
-</style>
-</head>
-<body>
-<h1>🏛️ {NAAM}</h1>
-<p>Bron: bestuur.vlaamsbrabant.be — {len(publicaties)} publicatie(s)</p>
-<table>
-  <thead>
-    <tr>
-      <th>Datum</th><th>Orgaan</th><th>Categorie</th><th>Titel</th><th>Agendapunten</th>
-    </tr>
-  </thead>
-  <tbody>{''.join(rijen)}</tbody>
-</table>
-</body>
-</html>"""
-
-    html_path.write_text(html, encoding="utf-8")
-    return html_path
+    rijen = [
+        [
+            p["datum_tekst"],
+            p["orgaan"],
+            p["categorie"],
+            f"<a href='{p['url']}' target='_blank'>{p['titel']}</a>",
+            agendapunten_html(p.get("agendapunten", []), genummerd=True),
+        ]
+        for p in publicaties
+    ]
+    return genereer_html_tabel(
+        naam=NAAM,
+        bron="bestuur.vlaamsbrabant.be",
+        kolommen=["Datum", "Orgaan", "Categorie", "Titel", "Agendapunten"],
+        rijen=rijen,
+        output_pad=html_path,
+    )
 
 
 # ---------------------------------------------------------------------------

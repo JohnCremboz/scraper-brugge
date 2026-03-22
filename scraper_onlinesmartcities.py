@@ -1,12 +1,16 @@
 """
-Scraper voor PDF-documenten van raadpleeg-halle.onlinesmartcities.be
+Scraper voor PDF-documenten van OnlineSmartCities / Besluitvorming-portalen
+
+Ondersteunde portalen:
+  raadpleeg-halle.onlinesmartcities.be
+  besluitvorming.leuven.be
+  en andere raadpleeg-*.onlinesmartcities.be / besluitvorming.*.be sites
 
 Gebruik:
-    uv run python scraper_halle.py --lijst-organen
-    uv run python scraper_halle.py --orgaan "Gemeenteraad" --output pdfs --maanden 12
-    uv run python scraper_halle.py --orgaan "Gemeenteraad" --notulen --maanden 24
-    uv run python scraper_halle.py --orgaan "College van Burgemeester en Schepenen" --output cbs --maanden 6
-    uv run python scraper_halle.py --alle --maanden 3
+    uv run python scraper_onlinesmartcities.py --base-url https://raadpleeg-halle.onlinesmartcities.be --lijst-organen
+    uv run python scraper_onlinesmartcities.py --base-url https://besluitvorming.leuven.be --orgaan "Gemeenteraad" --maanden 12
+    uv run python scraper_onlinesmartcities.py --base-url https://raadpleeg-halle.onlinesmartcities.be --alle --maanden 3
+    uv run python scraper_onlinesmartcities.py --base-url https://besluitvorming.leuven.be --orgaan "Gemeenteraad" --notulen --maanden 24
 """
 
 import argparse
@@ -46,67 +50,29 @@ def init_session():
     except Exception as e:
         logger.warning("Sessie-initialisatie mislukt: %s", e)
 
-
-def sanitize_filename(name: str) -> str:
-    """Verwijder ongeldige tekens uit bestandsnamen."""
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
-    name = re.sub(r'_+', '_', name)
-    name = name.strip("_. ")
-    return name[:180] if len(name) > 180 else name or "document"
+# Initialiseer direct bij import voor compatibiliteit
+init_session()
 
 
 def download_document(doc_url: str, bestemming: Path, filename_hint: str = "") -> bool:
-    """Download een /document/{id} URL als PDF."""
-    full_url = urljoin(BASE_URL, doc_url) if not doc_url.startswith("http") else doc_url
-    try:
-        resp = SESSION.get(full_url, stream=True, timeout=60, allow_redirects=True)
-        if resp.status_code != 200:
-            return False
-
-        # Bepaal bestandsnaam vanuit Content-Disposition
-        cd = resp.headers.get("content-disposition", "")
-        naam = ""
-        if "filename=" in cd:
-            match = re.search(r'filename=["\']?([^"\';\n]+)', cd)
-            if match:
-                naam = match.group(1).strip().strip('"\'')
-
-        if not naam:
-            naam = filename_hint or doc_url.split("/")[-1]
-
-        if not naam.lower().endswith(".pdf"):
-            naam += ".pdf"
-
-        naam = sanitize_filename(naam)
-        bestemming_pad = bestemming / naam
-
-        # Overgeslagen als al bestaat
-        if bestemming_pad.exists():
-            return True
-
-        # Lees chunks, controleer op PDF header
-        eerste_chunk = None
-        chunks = []
-        for chunk in resp.iter_content(8192):
-            if chunk:
-                if eerste_chunk is None:
-                    eerste_chunk = chunk
-                    if not chunk.startswith(b"%PDF"):
-                        return False  # Geen PDF
-                chunks.append(chunk)
-
-        if not chunks:
-            return False
-
-        with open(bestemming_pad, "wb") as f:
-            for chunk in chunks:
-                f.write(chunk)
-
-        return True
-
-    except Exception as e:
-        print(f"      [!] Download fout {full_url}: {type(e).__name__}: {e}")
+    """Download een /document/{id} URL als PDF via base_scraper."""
+    if SESSION is None or _config is None:
+        logger.error("Sessie niet geïnitialiseerd")
         return False
+
+    result = base_download_document(
+        session=SESSION,
+        config=_config,
+        doc_url=doc_url,
+        output_dir=bestemming,
+        filename_hint=filename_hint,
+        require_pdf=True,
+    )
+
+    if not result.success and result.error:
+        logger.debug("Download fout %s: %s", doc_url, result.error)
+
+    return result.success
 
 
 def haal_document_links_van_pagina(url: str) -> list[dict]:
@@ -225,7 +191,6 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
     if not heeft_inhoud:
         return 0
 
-
     verg_id = vergadering_url.rstrip("/").split("/")[-1]
     map_naam = sanitize_filename(f"{titel}_{verg_id}")
     verg_map = output_pad / map_naam
@@ -257,7 +222,7 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
     for subpad in [f"{vergadering_url}/agenda", f"{vergadering_url}/besluitenlijst"]:
         doc_links += haal_document_links_van_pagina(subpad)
 
-    # 3. Leuven-specifiek: bijkomendeagenda en andere dynamische subpagina's
+    # 3. Bijkomendeagenda en andere dynamische subpagina's (bv. Leuven)
     for subpagina_url in haal_extra_subpaginas(vergadering_url):
         doc_links += haal_document_links_van_pagina(subpagina_url)
 
@@ -285,7 +250,7 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
 def haal_organen_statisch() -> list[dict]:
     """
     Haal de organen op uit de statische HTML van de kalender.
-    Leuven gebruikt <select id='organs' multiple> met <option value='UUID'>.
+    Gebruikt <select id='organs' multiple> met <option value='UUID'>.
     Geeft lijst van {naam, uuid} terug.
     """
     try:
@@ -440,7 +405,7 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
             maand_titel = huidige_maand_titel(page)
             print(f"  [{maand_titel or f'Maand {maand_nr+1}'}]")
             print(f"    (laden van vergaderingen...)")
-            
+
             vergaderingen = haal_vergadering_links_van_pagina(page)
             nieuwe = [v for v in vergaderingen if v not in alle_vergadering_urls]
             alle_vergadering_urls.update(vergaderingen)
@@ -479,23 +444,24 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scraper voor PDF-documenten van raadpleeg-halle.onlinesmartcities.be",
+        description="Scraper voor OnlineSmartCities / Besluitvorming-portalen",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Voorbeelden:
-  uv run python scraper_halle.py --lijst-organen
-  uv run python scraper_halle.py --orgaan "Gemeenteraad" --maanden 12
-  uv run python scraper_halle.py --orgaan "Gemeenteraad" --notulen --maanden 24
-  uv run python scraper_halle.py --orgaan "College van Burgemeester en Schepenen" --output cbs --maanden 6
-  uv run python scraper_halle.py --alle --maanden 3 --agendapunten
+  uv run python scraper_onlinesmartcities.py --base-url https://raadpleeg-halle.onlinesmartcities.be --lijst-organen
+  uv run python scraper_onlinesmartcities.py --base-url https://besluitvorming.leuven.be --orgaan "Gemeenteraad" --maanden 12
+  uv run python scraper_onlinesmartcities.py --base-url https://besluitvorming.leuven.be --orgaan "Gemeenteraad" --notulen --maanden 24
+  uv run python scraper_onlinesmartcities.py --base-url https://raadpleeg-halle.onlinesmartcities.be --alle --maanden 3 --agendapunten
         """
     )
+    parser.add_argument("--base-url", type=str, default=None,
+        help="Basis-URL van het portaal (bv. https://raadpleeg-halle.onlinesmartcities.be)")
     parser.add_argument("--orgaan", "-o", type=str,
         help="Naam van het orgaan (bv. 'Gemeenteraad')")
     parser.add_argument("--alle", action="store_true",
         help="Scrape alle organen zonder filter")
-    parser.add_argument("--output", "-d", type=str, default="pdfs_halle",
-        help="Uitvoermap (standaard: pdfs_halle)")
+    parser.add_argument("--output", "-d", type=str, default="pdfs_smartcities",
+        help="Uitvoermap (standaard: pdfs_smartcities)")
     parser.add_argument("--maanden", "-m", type=int, default=12,
         help="Aantal maanden terug te doorzoeken (standaard: 12)")
     parser.add_argument("--agendapunten", "-a", action="store_true",
@@ -508,17 +474,14 @@ Voorbeelden:
         help="Toon beschikbare organen en stop")
     parser.add_argument("--zichtbaar", action="store_true",
         help="Toon de browser (voor debuggen)")
-    parser.add_argument("--base-url", type=str, default=None,
-        help="Alternatieve basis-URL (voor gebruik via scraper_groep.py)")
 
     args = parser.parse_args()
 
     if args.base_url:
-        global BASE_URL, KALENDER_URL, _config
+        global BASE_URL, KALENDER_URL
         BASE_URL = args.base_url.rstrip("/")
         KALENDER_URL = f"{BASE_URL}/zittingen/kalender"
-
-    init_session()
+        init_session()
 
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"

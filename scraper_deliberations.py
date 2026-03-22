@@ -811,6 +811,11 @@ def scrape_gemeente(
     return len(alle_items), doc_count
 
 
+def haal_organen_statisch() -> list[dict]:
+    """Deliberations.be heeft geen orgaanindeling — geeft altijd lege lijst terug."""
+    return []
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -824,14 +829,32 @@ Voorbeelden:
   python scraper_deliberations.py --lijst
   python scraper_deliberations.py --gemeente liege
   python scraper_deliberations.py --gemeente braine-lalleud --max-items 50
+  python scraper_deliberations.py --base-url https://deliberations.be/liege --output pdfs/liege
   python scraper_deliberations.py --alle --output-dir data/deliberations
         """,
     )
-    
+
+    # ── Standaard interface (scraper_groep.py / start.py compatibel) ────────
+    parser.add_argument("--base-url", type=str,
+                        help="Volledige gemeente-URL (bijv. https://deliberations.be/liege)")
+    parser.add_argument("--orgaan", type=str,
+                        help="Orgaan — deliberations.be heeft geen organen, wordt genegeerd")
+    parser.add_argument("--maanden", type=int, default=None,
+                        help="Periode in maanden (wordt omgezet naar --max-items)")
+    parser.add_argument("--output", type=str, default=None,
+                        help="Uitvoermap (alias voor --output-dir)")
+    parser.add_argument("--document-filter", type=str,
+                        help="Documentfilter — wordt genegeerd voor deliberations.be")
+    parser.add_argument("--agendapunten", action="store_true",
+                        help="Individuele besluiten — wordt genegeerd voor deliberations.be")
+    parser.add_argument("--zichtbaar", action="store_true",
+                        help="Browser zichtbaar — deliberations.be gebruikt geen browser")
+
+    # ── Eigen interface ──────────────────────────────────────────────────────
     parser.add_argument("--gemeente", "-g", type=str,
-                        help="Gemeente naam (gebruik --lijst om opties te zien)")
+                        help="Gemeente-slug (bijv. liege); gebruik --lijst voor opties")
     parser.add_argument("--alle", action="store_true",
-                        help="Scrape alle deliberations.be gemeenten")
+                        help="Scrape alle deliberations.be gemeenten (zonder --base-url)")
     parser.add_argument("--lijst", action="store_true",
                         help="Toon lijst van beschikbare gemeenten")
     parser.add_argument("--output-dir", "-o", type=str, default="pdfs",
@@ -840,12 +863,30 @@ Voorbeelden:
                         help="Maximum aantal items per gemeente (standaard: 100)")
     parser.add_argument("--no-pdfs", action="store_true",
                         help="Sla alleen metadata op, geen documenten downloaden")
-    
+
     args = parser.parse_args()
-    
+
+    # ── Standaard-args vertalen naar eigen args ──────────────────────────────
+    # --base-url https://deliberations.be/liege  →  --gemeente liege
+    if args.base_url and not args.gemeente:
+        slug = urlparse(args.base_url).path.strip("/").split("/")[0]
+        if slug:
+            args.gemeente = slug
+
+    # --output pad  →  --output-dir pad (alleen als niet al opgegeven)
+    if args.output and args.output_dir == "pdfs":
+        args.output_dir = args.output
+
+    # --maanden N  →  max_items (ruwe schatting: ~8 items/maand)
+    if args.maanden is not None and args.max_items == 100:
+        args.max_items = max(50, args.maanden * 8)
+
+    # --alle met --base-url = "alle organen van die gemeente" = gewoon scrapen
+    # --alle zonder --base-url = alle deliberations-gemeenten (origineel gedrag)
+
     init_session()
-    
-    # Lijst gemeenten
+
+    # ── Lijst tonen ──────────────────────────────────────────────────────────
     if args.lijst:
         print("\n📋 Deliberations.be gemeenten (uit simba-source.csv):\n")
         gemeenten = haal_gemeenten_lijst()
@@ -853,22 +894,20 @@ Voorbeelden:
             print("   [!] Geen gemeenten gevonden in CSV")
             print("   Tip: Zorg dat simba-source.csv bestaat met deliberations.be URLs")
             return
-        
         for i, gemeente in enumerate(gemeenten, 1):
             print(f"  {i:3}. {gemeente}")
-        
         print(f"\n   Totaal: {len(gemeenten)} gemeenten")
         return
-    
-    # Validatie
+
+    # ── Validatie ────────────────────────────────────────────────────────────
     if not args.gemeente and not args.alle:
-        print("❌ Geef --gemeente of --alle op (gebruik --lijst voor opties)")
+        print("❌ Geef --gemeente, --base-url of --alle op (gebruik --lijst voor opties)")
         sys.exit(1)
-    
+
     output_dir = Path(args.output_dir)
     download_pdfs = not args.no_pdfs
-    
-    # Scrape enkele gemeente
+
+    # ── Enkele gemeente ──────────────────────────────────────────────────────
     if args.gemeente:
         totaal_items, totaal_docs = scrape_gemeente(
             args.gemeente,
@@ -876,15 +915,14 @@ Voorbeelden:
             args.max_items,
             download_pdfs,
         )
-        
         print(f"\n{'='*70}")
         print(f"  ✅ Klaar!")
         print(f"  Items verzameld: {totaal_items}")
         print(f"  Documenten gedownload: {totaal_docs}")
         print(f"{'='*70}")
         return
-    
-    # Scrape alle gemeenten
+
+    # ── Alle gemeenten ───────────────────────────────────────────────────────
     if args.alle:
         gemeenten = haal_gemeenten_lijst()
         if not gemeenten:

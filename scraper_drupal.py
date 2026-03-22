@@ -1,14 +1,17 @@
 """
-Scraper voor Drupal-gemeenten met directe PDF-links.
+Scraper voor Drupal/TYPO3-gemeenten met directe PDF-links.
 
 Ondersteunde gemeenten:
   Dilbeek, Knokke-Heist, Rijkevorsel, Willebroek, Wervik, Putte,
-  Auderghem, Uccle, Laakdal, Destelbergen, Essen
+  Auderghem, Uccle, Laakdal, Destelbergen, Essen, Ingelmunster, Forest
 
 URL-patroon in simba-source.csv: */sites/default/files* of */sites/*/files*
+  of www.ingelmunster.be (TYPO3/db_files_2)
+  of www.forest.brussels (Drupal, kaart-gebaseerde listing)
 
 Gebruik:
     uv run python scraper_drupal.py --gemeente dilbeek --maanden 12
+    uv run python scraper_drupal.py --gemeente forest --maanden 6
     uv run python scraper_drupal.py --alle --maanden 6
     uv run python scraper_drupal.py --lijst
 """
@@ -18,7 +21,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -46,11 +49,14 @@ BASE_URL = ""
 # vergadering_re: optioneel — patroon voor vergadering-detailpagina-links
 #   Als vergadering_re aanwezig is, navigeren we naar detailpagina's
 #   en halen we daar de PDFs op.
-# pdf_re: patroon om PDF-links te herkennen (default: /sites/*/files/*.pdf)
+# pdf_re: optioneel patroon om PDF-links te herkennen (default: Drupal /sites/*/files/)
+# organen: optioneel — lijst van {naam, slug, listing_pad} voor multi-orgaan gemeenten
+# vereist_datum: optioneel — sla PDFs over waarvan geen datum in URL gevonden wordt
 
 _DRUPAL_PDF_RE = re.compile(
     r"(?:/sites/[^/]+/files/|/system/files/).*\.pdf", re.IGNORECASE
 )
+_TYPO3_PDF_RE = re.compile(r"(?:db_files_2/|\.pdf$)", re.IGNORECASE)
 
 GEMEENTEN: dict[str, dict] = {
     "www.dilbeek.be": {
@@ -121,6 +127,31 @@ GEMEENTEN: dict[str, dict] = {
         "listing_pad": "/besluiten-bekendmakingen-en-zittingsdocumenten",
         "vergadering_re": re.compile(r"/\d{8}-gemeente"),
         "pagina_max": 9,
+    },
+    "www.ingelmunster.be": {
+        "naam": "Ingelmunster",
+        "pdf_re": _TYPO3_PDF_RE,
+        "vereist_datum": True,
+        "organen": [
+            {"naam": "Gemeenteraad",
+             "slug": "gemeenteraad",
+             "listing_pad": "/gemeente-en-bestuur/bestuur/gemeenteraad/bekendmakingen"},
+            {"naam": "College van burgemeester en schepenen",
+             "slug": "college",
+             "listing_pad": "/gemeente-en-bestuur/bestuur/college-van-burgemeester-en-schepenen/bekendmakingen"},
+            {"naam": "Raad voor maatschappelijk welzijn",
+             "slug": "rmw",
+             "listing_pad": "/gemeente-en-bestuur/bestuur/raad-voor-maatschappelijk-welzijn/bekendmakingen"},
+            {"naam": "Vast Bureau",
+             "slug": "vast_bureau",
+             "listing_pad": "/gemeente-en-bestuur/bestuur/vast-bureau/bekendmakingen"},
+        ],
+    },
+    "www.forest.brussels": {
+        "naam": "Forest",
+        "listing_pad": "/fr/publications/conseil-communal-1",
+        # Datum zit in <time class="datetime" datetime="YYYY-MM-DD..."> in elke kaart
+        "kaart_klassen": ["publication", "conseil"],
     },
 }
 
@@ -195,8 +226,9 @@ def datum_uit_pad(pad: str) -> date | None:
 # PDF-links verzamelen
 # ---------------------------------------------------------------------------
 
-def _pdfs_van_html(html: str, base: str) -> list[dict]:
+def _pdfs_van_html(html: str, base: str, pdf_re: re.Pattern | None = None) -> list[dict]:
     """Verzamel alle PDF-links uit HTML, geef {'url', 'naam'} terug."""
+    patroon = pdf_re if pdf_re is not None else _DRUPAL_PDF_RE
     soup = BeautifulSoup(html, "lxml")
     gezien: set[str] = set()
     resultaat: list[dict] = []
@@ -204,7 +236,7 @@ def _pdfs_van_html(html: str, base: str) -> list[dict]:
         href = a["href"]
         parsed = urlparse(href)
         pad = parsed.path
-        if not _DRUPAL_PDF_RE.search(pad):
+        if not patroon.search(href if pdf_re is not None else pad):
             continue
         full_url = _absolute(href) if not href.startswith("http") else href
         if full_url in gezien:
@@ -255,7 +287,12 @@ def scrape_gemeente(
     maanden: int = 12,
     document_filter: str | None = None,
 ) -> tuple[int, int]:
-    """Scrape één Drupal-gemeente.
+    """Scrape één Drupal/TYPO3-gemeente.
+
+    Ondersteunt optioneel:
+    - pdf_re: aangepast PDF-herkenningspatroon (default: Drupal /sites/*/files/)
+    - organen: lijst van {naam, slug, listing_pad} voor multi-orgaan gemeenten
+    - vereist_datum: sla PDFs over zonder datum in URL (bijv. TYPO3-bijlagen)
 
     Returns:
         (totaal_geprobeerd, totaal_gedownload)
@@ -266,99 +303,153 @@ def scrape_gemeente(
     naam = config["naam"]
     gem_dir = output_dir / sanitize_filename(naam)
     gem_dir.mkdir(parents=True, exist_ok=True)
+    pdf_re = config.get("pdf_re")
+    vereist_datum = config.get("vereist_datum", False)
 
     logger.info("▶  %s  (grensdatum=%s)", naam, grensdatum)
 
-    listing_url = _absolute(config["listing_pad"])
-    resp = _get(listing_url)
-    if not resp or resp.status_code != 200:
-        logger.warning("Listing niet bereikbaar: %s (HTTP %s)",
-                       listing_url, getattr(resp, "status_code", "?"))
-        return 0, 0
-
-    html = resp.text
-    jaar_re = config.get("jaar_re")
-    vergadering_re = config.get("vergadering_re")
-
-    # Verzamel alle PDF-bronpagina's (HTML-tekst, URL)
-    paginas: list[tuple[str, str]] = []
-
-    if jaar_re:
-        # Listing → jaarpagina's → PDFs
-        soup = BeautifulSoup(html, "lxml")
-        jaar_urls: list[str] = []
-        gezien: set[str] = set()
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            parsed = urlparse(href)
-            pad = parsed.path
-            if jaar_re.search(pad) and pad not in gezien:
-                m = re.search(r"(\d{4})$", pad)
-                if m and int(m.group(1)) >= grensdatum.year:
-                    gezien.add(pad)
-                    jaar_urls.append(_absolute(href) if not href.startswith("http") else href)
-        for jaar_url in jaar_urls:
-            r = _get(jaar_url)
-            if r and r.status_code == 200:
-                paginas.append((r.text, jaar_url))
-    elif vergadering_re:
-        # Listing → vergadering-detailpagina's → PDFs
-        # Optionele paginering: pagina_max geeft het max. paginanummer (0-gebaseerd)
-        pagina_max = config.get("pagina_max", 0)
-        listing_htmls = [(html, listing_url)]
-        sep = "&" if "?" in listing_url else "?"
-        for pagina_nr in range(1, pagina_max + 1):
-            r = _get(f"{listing_url}{sep}page={pagina_nr}")
-            if r and r.status_code == 200:
-                listing_htmls.append((r.text, f"{listing_url}{sep}page={pagina_nr}"))
-        gezien_verg: set[str] = set()
-        for listing_html, _ in listing_htmls:
-            for verg_url in _vergadering_links_van_html(listing_html, vergadering_re):
-                if verg_url not in gezien_verg:
-                    gezien_verg.add(verg_url)
-                    r = _get(verg_url)
-                    if r and r.status_code == 200:
-                        paginas.append((r.text, verg_url))
+    # Multi-orgaan: bouw lijst van (listing_pad, output_subdir)
+    organen_config = config.get("organen")
+    if organen_config:
+        listing_taken = [
+            (orgaan["listing_pad"], gem_dir / sanitize_filename(orgaan["slug"]))
+            for orgaan in organen_config
+        ]
     else:
-        # Directe PDFs op listing-pagina
-        paginas = [(html, listing_url)]
+        listing_taken = [(config["listing_pad"], gem_dir)]
 
-    # Verzamel alle PDFs
-    alle_pdfs: list[dict] = []
-    for pagina_html, pagina_url in paginas:
-        pdfs = _pdfs_van_html(pagina_html, pagina_url)
-        for pdf in pdfs:
-            # Datumfilter
-            pad = urlparse(pdf["url"]).path
-            datum = datum_uit_pad(pad)
-            if datum is not None and datum < grensdatum:
-                continue
-            # Documentfilter
-            if document_filter:
-                naam_lower = pdf["naam"].lower()
-                url_lower = pdf["url"].lower()
-                if (document_filter.lower() not in naam_lower and
-                        document_filter.lower() not in url_lower):
+    totaal_geprobeerd = 0
+    totaal_gedownload = 0
+
+    for listing_pad, taak_dir in listing_taken:
+        taak_dir.mkdir(parents=True, exist_ok=True)
+
+        listing_url = _absolute(listing_pad)
+        resp = _get(listing_url)
+        if not resp or resp.status_code != 200:
+            logger.warning("Listing niet bereikbaar: %s (HTTP %s)",
+                           listing_url, getattr(resp, "status_code", "?"))
+            continue
+
+        html = resp.text
+        jaar_re = config.get("jaar_re")
+        vergadering_re = config.get("vergadering_re")
+        kaart_klassen = config.get("kaart_klassen")
+
+        # Verzamel alle PDFs
+        alle_pdfs: list[dict] = []
+
+        if kaart_klassen:
+            # Kaart-gebaseerde listing (bv. Forest): datum via <time datetime="...">
+            soup = BeautifulSoup(html, "lxml")
+            gezien: set[str] = set()
+            for kaart in soup.find_all(
+                "div", class_=lambda c: c and all(k in c for k in kaart_klassen)
+            ):
+                time_tag = kaart.find("time", class_="datetime")
+                if not time_tag:
                     continue
-            alle_pdfs.append(pdf)
+                dt_str = time_tag.get("datetime", "")
+                try:
+                    d = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).date()
+                except (ValueError, AttributeError):
+                    continue
+                if d < grensdatum:
+                    continue
+                for a in kaart.find_all("a", href=True):
+                    href = a["href"].strip()
+                    if not href or ".pdf" not in href.lower():
+                        continue
+                    doc_url = _absolute(href)
+                    if doc_url in gezien:
+                        continue
+                    gezien.add(doc_url)
+                    naam = a.get_text(strip=True) or Path(urlparse(doc_url).path).stem
+                    if document_filter:
+                        if (document_filter.lower() not in naam.lower() and
+                                document_filter.lower() not in doc_url.lower()):
+                            continue
+                    alle_pdfs.append({"url": doc_url, "naam": naam})
+        else:
+            # Paginas-gebaseerde flow (standaard Drupal/TYPO3)
+            paginas: list[tuple[str, str]] = []
 
-    logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
+            if jaar_re:
+                # Listing -> jaarpagina's -> PDFs
+                soup = BeautifulSoup(html, "lxml")
+                jaar_urls: list[str] = []
+                gezien: set[str] = set()
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    parsed = urlparse(href)
+                    pad = parsed.path
+                    if jaar_re.search(pad) and pad not in gezien:
+                        m = re.search(r"(\d{4})$", pad)
+                        if m and int(m.group(1)) >= grensdatum.year:
+                            gezien.add(pad)
+                            jaar_urls.append(_absolute(href) if not href.startswith("http") else href)
+                for jaar_url in jaar_urls:
+                    r = _get(jaar_url)
+                    if r and r.status_code == 200:
+                        paginas.append((r.text, jaar_url))
+            elif vergadering_re:
+                # Listing -> vergadering-detailpagina's -> PDFs
+                pagina_max = config.get("pagina_max", 0)
+                listing_htmls = [(html, listing_url)]
+                sep = "&" if "?" in listing_url else "?"
+                for pagina_nr in range(1, pagina_max + 1):
+                    r = _get(f"{listing_url}{sep}page={pagina_nr}")
+                    if r and r.status_code == 200:
+                        listing_htmls.append((r.text, f"{listing_url}{sep}page={pagina_nr}"))
+                gezien_verg: set[str] = set()
+                for listing_html, _ in listing_htmls:
+                    for verg_url in _vergadering_links_van_html(listing_html, vergadering_re):
+                        if verg_url not in gezien_verg:
+                            gezien_verg.add(verg_url)
+                            r = _get(verg_url)
+                            if r and r.status_code == 200:
+                                paginas.append((r.text, verg_url))
+            else:
+                # Directe PDFs op listing-pagina
+                paginas = [(html, listing_url)]
 
-    alle_resultaten: list[DownloadResult] = []
-    for pdf in alle_pdfs:
-        hint = sanitize_filename(Path(urlparse(pdf["url"]).path).name)
-        result = download_document(
-            SESSION, _config,
-            pdf["url"],
-            gem_dir,
-            filename_hint=hint or pdf["naam"],
-            require_pdf=True,
-        )
-        alle_resultaten.append(result)
+            for pagina_html, pagina_url in paginas:
+                pdfs = _pdfs_van_html(pagina_html, pagina_url, pdf_re=pdf_re)
+                for pdf in pdfs:
+                    pad = urlparse(pdf["url"]).path
+                    datum = datum_uit_pad(pad)
+                    if vereist_datum and datum is None:
+                        continue
+                    if datum is not None and datum < grensdatum:
+                        continue
+                    if document_filter:
+                        naam_lower = pdf["naam"].lower()
+                        url_lower = pdf["url"].lower()
+                        if (document_filter.lower() not in naam_lower and
+                                document_filter.lower() not in url_lower):
+                            continue
+                    alle_pdfs.append(pdf)
 
-    gedownload = sum(1 for r in alle_resultaten if r.success and not r.skipped)
-    print_summary(alle_resultaten, naam=naam)
-    return len(alle_resultaten), gedownload
+        logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
+
+        taak_resultaten: list = []
+        for pdf in alle_pdfs:
+            hint = sanitize_filename(Path(urlparse(pdf["url"]).path).name)
+            result = download_document(
+                SESSION, _config,
+                pdf["url"],
+                taak_dir,
+                filename_hint=hint or pdf["naam"],
+                require_pdf=True,
+            )
+            taak_resultaten.append(result)
+
+        taak_gedownload = sum(1 for r in taak_resultaten if r.success and not r.skipped)
+        print_summary(taak_resultaten, naam=naam)
+        totaal_geprobeerd += len(taak_resultaten)
+        totaal_gedownload += taak_gedownload
+
+    return totaal_geprobeerd, totaal_gedownload
 
 
 # ---------------------------------------------------------------------------

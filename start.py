@@ -181,13 +181,20 @@ def bouw_commando(
 
     cmd = ["uv", "run", "python", script]
 
-    # Dedicated scrapers hebben hun URL al ingebakken
+    # Dedicated scrapers hebben hun URL al ingebakken.
+    # Voor deliberations.be zit de gemeente-slug in het pad → volledige URL doorgeven.
     if gemeente["gemeente"] not in DEDICATED:
-        cmd += ["--base-url", gemeente["base_url"]]
+        base = gemeente["url"] if gemeente.get("type") == "deliberations" else gemeente["base_url"]
+        cmd += ["--base-url", base]
 
     # iBabs dedicated scrapers krijgen --gemeente ipv --alle
     dedicated_info = DEDICATED.get(gemeente["gemeente"], {})
     if dedicated_info.get("gemeente_arg"):
+        cmd += ["--gemeente", gemeente["gemeente"]]
+    elif gemeente.get("type") == "irisnet":
+        # irisnet heeft één scraper voor alle Brusselse gemeenten; --gemeente beperkt tot één.
+        if orgaan:
+            cmd += ["--orgaan", orgaan]
         cmd += ["--gemeente", gemeente["gemeente"]]
     elif orgaan:
         cmd += ["--orgaan", orgaan]
@@ -273,50 +280,11 @@ def voer_uit(cmd: list[str]):
 # ---------------------------------------------------------------------------
 
 def stap_gemeente(alle_gemeenten: list[dict]) -> dict | None:
-    """
-    Laat de gebruiker een gemeente kiezen.
-    Dedicated scrapers staan bovenaan; de rest is doorzoekbaar via autocomplete.
-    """
-    ded_namen = set(DEDICATED.keys())
+    """Laat de gebruiker een gemeente kiezen via autocomplete."""
+    alle = sorted(alle_gemeenten, key=lambda g: g["gemeente"])
+    naam_naar_gemeente = {g["gemeente"]: g for g in alle}
+    namen = [g["gemeente"] for g in alle]
 
-    # Dedicated gemeenten als vaste keuzelijst bovenaan
-    ded_keuzes = [
-        questionary.Choice(
-            title=f"{naam}  [dedicated scraper]",
-            value=next(
-                (g for g in alle_gemeenten if g["gemeente"] == naam),
-                {"gemeente": naam, "url": "", "type": "smartcities", "base_url": ""},
-            ),
-        )
-        for naam in DEDICATED
-    ]
-
-    # Alle overige gemeenten als autocomplete-lijst
-    overige = sorted(
-        [g for g in alle_gemeenten if g["gemeente"] not in ded_namen],
-        key=lambda g: g["gemeente"],
-    )
-    naam_naar_gemeente = {g["gemeente"]: g for g in overige}
-
-    # ── Keuzemenu: dedicated of zoeken ──────────────────────────────────
-    eerste_keuze = questionary.select(
-        "Gemeente kiezen:",
-        choices=ded_keuzes + [
-            questionary.Separator(),
-            questionary.Choice("Zoek een andere gemeente…", value="__zoek__"),
-            questionary.Choice("── Terug", value=None),
-        ],
-        style=STIJL,
-        use_shortcuts=False,
-    ).ask()
-
-    if eerste_keuze is None:
-        return None
-    if eerste_keuze != "__zoek__":
-        return eerste_keuze  # Dedicated gemeente gekozen
-
-    # ── Autocomplete-zoekveld ────────────────────────────────────────────
-    namen = [g["gemeente"] for g in overige]
     gekozen_naam = questionary.autocomplete(
         "Typ (deel van) de gemeentenaam:",
         choices=namen,
