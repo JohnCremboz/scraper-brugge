@@ -9,15 +9,15 @@
 
 | Type | Gemeenten/entiteiten | Scraper |
 |------|---------------------|---------|
-| Deliberations.be (Plone/IMIO) | 203 | scraper_deliberations.py |
+| Deliberations.be | 167 | scraper_deliberations.py |
 | CipalSchaubroeck / CSEcho | 79 | scraper_menen.py |
-| SmartCities / Besluitvorming | 72 | scraper_onlinesmartcities.py |
-| LBLOD | 63 | scraper_lblod.py |
+| SmartCities / Besluitvorming | 70 | scraper_onlinesmartcities.py |
+| LBLOD | 62 | scraper_lblod.py |
 | MeetingBurger | 46 | scraper_ranst.py |
-| iDélibé (conseilcommunal.be) | 39 | scraper_idelibe.py |
-| WordPress / TYPO3 / Plone | 34 | scraper_wordpress.py |
-| iMio / Plone directe PDFs | 15 | scraper_imio.py |
-| Drupal / TYPO3 directe PDFs | 14 | scraper_drupal.py |
+| iDélibé (conseilcommunal.be) | 31 | scraper_idelibe.py |
+| iMio / Plone directe PDFs | 31 | scraper_imio.py |
+| WordPress / TYPO3 / Plone | 36 | scraper_wordpress.py |
+| Drupal / TYPO3 directe PDFs | 15 | scraper_drupal.py |
 | Icordis CMS (LCP nv) | 12 | scraper_icordis.py |
 | Irisnet (Brusselse gem.) | 10 | scraper_irisnet.py |
 | iBabs | 2 | scraper_ibabs.py |
@@ -32,7 +32,6 @@
 | Forest | 1 | scraper_drupal.py |
 | Molenbeek-Saint-Jean | 1 | scraper_molenbeek.py |
 | Schaerbeek | 1 | scraper_schaerbeek.py |
-| Leuven | 1 | scraper_onlinesmartcities.py |
 | **Geblokkeerd (DNS)** | **1** | — |
 
 ---
@@ -133,11 +132,10 @@ Gemeenten met iMio/Plone-websites die PDFs direct aanbieden (niet via deliberati
 |----------|--------|-------------|
 | La Hulpe | lahulpe.be | ajax_load=1, jaar-subpagina's (Structuur A) |
 | Manage | manage-commune.be | ajax_load=1, alles op één pagina (Structuur B) |
-| … (13 andere) | … | zie GEMEENTEN in scraper_imio.py |
-
-> **Datumfix (23 mrt 2026)**: `_datum_uit_pad` in scraper_imio.py had een bug waarbij `DD-MM-YYYY`
-> bestandsnamen de regex matchten op `DD-MM-20` → year=2020+DD. Opgelost door drie aparte
-> patronen in prioriteitsvolgorde (DD-MM-YYYY eerst).
+| Fontaine-l'Évêque | villedefontaine.be | faceted listing (Structuur C), zitting-subpagina's |
+| Clavier | clavier.be | Structuur A (jaar-subpagina's /annee-YYYY) |
+| Braine-l'Alleud | braine-lalleud.be | Structuur A |
+| … (26 andere) | … | zie GEMEENTEN in scraper_imio.py |
 
 ### iDélibé / conseilcommunal.be (39 gemeenten) ✅
 
@@ -150,6 +148,12 @@ Alle 39 gemeenten via REST API (`/ApiCitoyen/public/v1/`) — `scraper_idelibe.p
 ### Provincie Luik (scraper_drupal.py) ✅
 
 - `www.provincedeliege.be` — Drupal 7, listing `/fr/conseil/pvcra`, PDF-pad `/conseillers/doc/pva/YYYYMMDD.pdf`
+
+### Waalse gemeenten — automatische type-detectie ✅
+
+`scraper_groep.py detecteer_type()` herkent nu alle Waalse iMio-gemeenten via `_IMIO_HOSTS` en alle
+LetsGoCity/WordPress-gemeenten via `_WAALSE_WP_HOSTS`. Enkel Herstappe blijft als `overig` (geen
+werkende website).
 
 ---
 
@@ -206,10 +210,10 @@ scraper-brugge/
 ├── scraper_icordis.py           # Icordis CMS/LCP — 12 gem. (*/file/download)
 ├── scraper_linkebeek.py         # LCP agenda-notulen — 2 gem. (Linkebeek, SGR)
 ├── scraper_docodis.py           # Docodis CMS — 1 gem. (Koekelberg)
-├── scraper_imio.py              # iMio/Plone directe PDFs — 15 gem. (La Hulpe, Manage, …)
-├── scraper_drupal.py            # Drupal/TYPO3 direct PDF — 14 gem. incl. Prov. Luik
-├── scraper_wordpress.py         # WordPress/TYPO3/Plone — 34 gem. incl. Prov. Namen
-├── scraper_idelibe.py           # iDélibé/conseilcommunal.be — 39 Waalse gem. (REST API)
+├── scraper_imio.py              # iMio/Plone directe PDFs — 31 gem. (structuren A/B/C)
+├── scraper_drupal.py            # Drupal/TYPO3 direct PDF — 15 gem. incl. Prov. Luik
+├── scraper_wordpress.py         # WordPress/TYPO3/Plone — 36 gem. incl. Prov. Namen
+├── scraper_idelibe.py           # iDélibé/conseilcommunal.be — 31 Waalse gem. (REST API)
 ├── scraper_pubcon.py            # Pubcon/Tobibus LBLOD — 1 gem. (Oudsbergen)
 ├── scraper_provantwerpen.py     # Prov. Antwerpen
 ├── scraper_vlaamsbrabant.py     # Prov. Vlaams-Brabant

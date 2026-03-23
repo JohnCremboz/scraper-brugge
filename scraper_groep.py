@@ -20,6 +20,7 @@ Ondersteunde types:
   docodis          *.be/AC-file/docodis — Docodis documentbeheer CMS        (HTML/PDF)
   linkebeek        *.be/download.ashx — LCP agenda-notulen portaal          (HTML/PDF)
   drupal           *.be/sites/*/files of *.be/system/files — Drupal direct PDF   (HTML/PDF)
+  imio             iMio/Plone gemeentesites met procès-verbaux              (HTML/PDF)
   overig           Andere bekende sites                                     (handmatig)
   leeg             Geen URL beschikbaar
 
@@ -34,6 +35,7 @@ Gebruik:
 
 import argparse
 import csv
+import os
 import re
 import subprocess
 import sys
@@ -260,6 +262,15 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": False,
         "kleur": "bright_yellow",
     },
+    "imio": {
+        "label": "iMio/Plone gemeentesites",
+        "beschrijving": "Eigen iMio/Plone-site met procès-verbaux — Waalse gemeenten",
+        "scraper": "scraper_imio.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "heeft_organen": False,
+        "kleur": "bright_magenta",
+    },
     "overig": {
         "label": "Overig (aangepaste site)",
         "beschrijving": "Diverse sites — geen gestandaardiseerde scraper beschikbaar",
@@ -291,6 +302,19 @@ STIJL = Style([
 
 
 # ---------------------------------------------------------------------------
+# iMio/Plone gemeenten — scraper_imio.py via hostname
+_IMIO_HOSTS: frozenset[str] = frozenset({
+    "www.viroinval.be", "www.couvin.be", "www.herstal.be", "www.burdinne.be",
+    "www.andenne.be", "www.arlon.be", "www.blegny.be", "www.chaumont-gistoux.be",
+    "www.daverdisse.be", "www.estinnes.be", "www.froidchapelle.be", "www.gerpinnes.be",
+    "www.grace-hollogne.be", "www.heron.be", "www.honnelles.be", "www.jalhay.be",
+    "www.jurbise.be", "www.meix-devant-virton.be", "www.mettet.be", "www.paliseul.be",
+    "www.philippeville.be", "www.quaregnon.be", "www.saint-ghislain.be",
+    "www.thimister-clermont.be", "www.thuin.be", "www.wasseiges.be",
+    "www.clavier.be", "www.braine-lalleud.be", "www.villedefontaine.be",
+    "www.lahulpe.be", "www.manage-commune.be",
+})
+
 # Waalse WordPress/Plone-gemeenten — scraper_wordpress.py via hostname
 _WAALSE_WP_HOSTS: frozenset[str] = frozenset({
     "www.bernissart.be", "www.floreffe.be", "www.waterloo.be",
@@ -308,6 +332,7 @@ _WAALSE_WP_HOSTS: frozenset[str] = frozenset({
     "www.hastiere.be",
     "www.pontacelles.be",
     "www.province.namur.be",
+    "www.courcelles.eu",
 })
 
 # iDélibé commune ID's (www.conseilcommunal.be/commune/{id})
@@ -371,6 +396,9 @@ def detecteer_type(url: str) -> str:
         return "pubcon"
     if "/wp-content/uploads" in u or "www.st.vith.be" in u or "/app/uploads" in u or "/fileadmin/gemeinde_amel" in u or "/pv-et-resumes-du-conseil" in u or "@@folder_listing" in u:
         return "wordpress"
+    # iMio/Plone gemeenten op hostname (vóór _WAALSE_WP_HOSTS check)
+    if urlparse(url).netloc.lower() in _IMIO_HOSTS:
+        return "imio"
     # Waalse WordPress/Plone-gemeenten op hostname
     if urlparse(url).netloc.lower() in _WAALSE_WP_HOSTS:
         return "wordpress"
@@ -465,9 +493,12 @@ def bouw_commando(
     # is de volledige URL nodig; voor alle andere scrapers volstaat base_url (schema+netloc).
     cmd += ["--base-url", gemeente["url"] if type_ == "deliberations" else gemeente["base_url"]]
 
+    if type_ == "imio":
+        # scraper_imio.py heeft geen --orgaan/--alle (organen-stijl); enkel --base-url + --maanden
+        pass
     # irisnet heeft één scraper voor alle Brusselse gemeenten; --alle zou alle 10 scrapen.
     # Geef dus altijd --gemeente mee zodat enkel de gevraagde gemeente gescraped wordt.
-    if type_ == "irisnet":
+    elif type_ == "irisnet":
         if orgaan:
             cmd += ["--orgaan", orgaan]
         cmd += ["--gemeente", gemeente["gemeente"]]
@@ -547,11 +578,16 @@ def scrape_batch(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                 cwd=str(SCRIPT_DIR),
             )
             assert proc.stdout is not None
             for lijn in proc.stdout:
-                console.print(f"  {lijn}", end="")
+                try:
+                    console.print(f"  {lijn}", end="", markup=False, highlight=False)
+                except Exception:
+                    sys.stdout.buffer.write(f"  {lijn}".encode("utf-8", errors="replace"))
+                    sys.stdout.buffer.flush()
             proc.wait()
             if proc.returncode == 0:
                 geslaagd += 1
@@ -794,6 +830,9 @@ def tui_main(gemeenten: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Zorg dat stdout UTF-8 gebruikt op Windows (anders cp1252)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(
         description="Gegroepeerde scraper voor alle bekende gemeenten per websitetype.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -905,8 +944,11 @@ Voorbeelden:
         return
 
     if not args.orgaan and not args.alle:
-        console.print("[red]Geef --orgaan of --alle op.[/red]")
-        sys.exit(1)
+        # Types zonder orgaan-concept (bv. imio: enkel PV's) vereisen geen --orgaan/--alle
+        type_config = TYPES.get(args.type or "", {})
+        if type_config.get("heeft_organen", True):
+            console.print("[red]Geef --orgaan of --alle op.[/red]")
+            sys.exit(1)
 
     scrape_batch(
         te_verwerken,

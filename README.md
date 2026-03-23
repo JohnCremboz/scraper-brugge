@@ -1,6 +1,6 @@
 ﻿# Besluitendatabank Scraper
 Automatische downloader voor PDF-documenten (notulen, besluitenlijsten, agenda's, besluiten) van Belgische gemeenten.
-**Ondersteunde gemeenten:** 429 gemeenten met scraper, 555 in de bronlijst.
+**Ondersteunde gemeenten:** 574 gemeenten met scraper, 575 in de bronlijst.
 ## Installatie
 1. Zorg dat [uv](https://docs.astral.sh/uv/) geïnstalleerd is
 2. Installeer dependencies:
@@ -29,16 +29,21 @@ uv run python scraper_ingelmunster.py --orgaan "Gemeenteraad" --maanden 12
 ## Websitetypes
 | Type | Aantal | Voorbeelden | Scraper | Browser |
 |------|--------|------------|---------|---------|
-| SmartCities | 71 | Brugge, Leuven, Kortrijk, Halle | scraper_halle.py | Ja (Playwright) |
-| CipalSchaubroeck / CSEcho | 85 | Beernem, Menen, Ieper, Pajottegem | scraper_menen.py | Nee (REST API) |
-| MeetingBurger | 41 | Ranst, Hulshout | scraper_ranst.py | Nee (REST API) |
-| LBLOD | 48 | Gistel, Bredene, Assenede | scraper_lblod.py | Nee (HTML) |
-| Deliberations.be | 180 | Liège, Namur, Charleroi, Awans | scraper_deliberations.py | Nee (HTML) |
+| SmartCities | 70 | Brugge, Leuven, Kortrijk, Halle | scraper_halle.py | Ja (Playwright) |
+| CipalSchaubroeck / CSEcho | 79 | Beernem, Menen, Ieper, Pajottegem | scraper_menen.py | Nee (REST API) |
+| MeetingBurger | 46 | Ranst, Hulshout | scraper_ranst.py | Nee (REST API) |
+| LBLOD | 62 | Gistel, Bredene, Assenede | scraper_lblod.py | Nee (HTML) |
+| iDélibé (conseilcommunal.be) | 31 | Anderlecht, Namur, Spa | scraper_idelibe.py | Nee (HTML) |
+| Deliberations.be | 167 | Liège, Charleroi, Awans | scraper_deliberations.py | Nee (HTML) |
+| iMio/Plone gemeenten | 31 | Arlon, Viroinval, Herstal | scraper_imio.py | Nee (HTML) |
+| WordPress / Plone | 36 | Hastière, Courcelles, Waterloo | scraper_wordpress.py | Nee (HTML) |
+| Icordis CMS | 12 | Vlaamse Icordis-gemeenten | scraper_icordis.py | Nee (HTML) |
+| Drupal | 15 | Diverse sites | scraper_drupal.py | Nee (HTML) |
 | iBabs | 2 | Kalmthout, Stabroek | scraper_ibabs.py | Nee (HTML) |
 | Provincie Vlaams-Brabant | 1 | Provincie Vlaams-Brabant | scraper_vlaamsbrabant.py | Nee (HTML) |
-| Ingelmunster | 1 | Ingelmunster | scraper_ingelmunster.py | Nee (HTML) |
-| Irisnet (Brussel) | 8 | Schaerbeek, Forest, Molenbeek | — | — |
-| Overig | 118 | Diverse sites | — | — |
+| Ingelmunster | 1 | Ingelmunster | scraper_drupal.py | Nee (HTML) |
+| Irisnet (Brussel) | 10 | Schaerbeek, Forest, Molenbeek | scraper_irisnet.py | Nee (HTML) |
+| Overig | 1 | Herstappe | — | — |
 ## Commando regel voorbeelden
 ### Brugge / Leuven (SmartCities)
 ```powershell
