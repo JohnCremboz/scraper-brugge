@@ -157,6 +157,41 @@ werkende website).
 
 ---
 
+## Health check — URL-bereikbaarheid (23 maart 2026)
+
+Resultaat van `uv run python health_check.py --url-check`: **17 echte problemen** (was 269 vóór fix van valse positieven — zie hieronder).
+
+**Valse positieven gecorrigeerd in `health_check.py`:**
+- **Deliberations.be (167×)**: HEAD-request → 404, maar GET → 200 (Plone/Zope-gedrag) → fallback op GET tevens bij 404
+- **LBLOD (62×)**: 403 bij directe requests; scraper werkt met eigen sessie/headers → 403 telt niet als fout voor `_TYPE_VERWACHT_403`
+- **Icordis/Drupal (~27×)**: CSV-URL is pad-template (`/file/download`, `/sites/default/files`) → alleen `scheme://host` wordt gecheckt via `_check_url_voor_type()`
+
+**Resterende 17 echte problemen:**
+
+| Gemeente | Type | HTTP | Oorzaak |
+|----------|------|------|---------|
+| Herstappe | overig | DNS mislukt | Geen werkende website (bekende gap) |
+| Nazareth-De Pinte | cipalschaubroeck | DNS mislukt | CipalSchaubroeck-domein verdwenen? CSV-URL vervangen door correcte |
+| Rumes | wordpress | verbinding geweigerd | Site offline |
+| Sankt Vith | wordpress | 404 | WordPress-pagina verplaatst? |
+| Linkebeek | linkebeek | 404 | Linkebeek-scraper-URL stuk |
+| Sint-Genesius-Rode | linkebeek | 404 | Linkebeek-scraper-URL stuk |
+| Manage | deliberations | 401 | Deliberations.be vraagt authenticatie voor dit pad |
+| Koekelberg | docodis | 403 | Docodis-site geblokkeerd bij directe requests |
+| Amel | wordpress | 403 | Bot-bescherming (scraper wellicht nog OK) |
+| Bernissart | wordpress | 403 | Bot-bescherming |
+| Burg-Reuland | wordpress | 403 | Bot-bescherming |
+| Bütgenbach | wordpress | 403 | Bot-bescherming |
+| Floreffe | wordpress | 403 | Bot-bescherming |
+| Kelmis | wordpress | 403 | Bot-bescherming |
+| Lontzen | wordpress | 403 | Bot-bescherming |
+| Raeren | wordpress | 403 | Bot-bescherming |
+| Woluwe-Saint-Pierre | wordpress | 403 | Bot-bescherming |
+
+> **Opmerking WordPress 403**: de meeste WordPress-sites blokkeren directe HEAD/GET-requests maar de scraper zelf (met correcte `User-Agent` en sessie) werkt gewoonlijk wél. Testen met `uv run python scraper_wordpress.py --gemeente ...` om te bevestigen.
+
+---
+
 ## Geblokkeerde gemeenten
 
 | Gemeente | Probleem |

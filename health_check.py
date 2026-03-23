@@ -38,6 +38,14 @@ _STATUS_OK   = "ok"
 _STATUS_FOUT = "fout"
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
 
+# Types waarbij de CSV-URL een bestandspad-template is (bijv. /file/download);
+# voor de bereikbaarheidscheck wordt alleen scheme+host gebruikt.
+_URL_IS_TEMPLATE: frozenset[str] = frozenset({"icordis", "drupal", "ingelmunster", "forest"})
+
+# Types die stelselmatig 403 teruggeven bij directe requests (bot-bescherming),
+# maar waarvan de scraper met eigen sessie/headers wél werkt.
+_TYPE_VERWACHT_403: frozenset[str] = frozenset({"lblod", "vlaamsbrabant"})
+
 
 # ---------------------------------------------------------------------------
 # CSV inlezen
@@ -145,12 +153,28 @@ def _check_scrapers() -> list[tuple[str, bool]]:
 # ---------------------------------------------------------------------------
 
 def _head_of_get(url: str, timeout: int) -> requests.Response:
-    """Probeer HEAD; val terug op GET als de server 405 geeft."""
+    """Probeer HEAD; val terug op GET als de server 404 of 405 geeft.
+
+    Sommige servers (o.a. Plone/Zope-sites zoals deliberations.be) sturen 404
+    op een HEAD-request maar 200 op GET — val in dat geval terug op GET.
+    """
     headers = {"User-Agent": _UA}
     resp = requests.head(url, timeout=timeout, headers=headers, allow_redirects=True)
-    if resp.status_code == 405:
+    if resp.status_code in (404, 405):
         resp = requests.get(url, timeout=timeout, headers=headers, stream=True)
     return resp
+
+
+def _check_url_voor_type(r: dict) -> str:
+    """Geef de te-controleren URL terug.
+
+    Voor types waarbij de CSV-URL een bestandspad-template is worden alle
+    paden weggegooid en wordt alleen de origin (scheme://host) gecheckt.
+    """
+    if r.get("type") in _URL_IS_TEMPLATE:
+        p = urlparse(r["url"])
+        return f"{p.scheme}://{p.netloc}"
+    return r["url"]
 
 
 def _check_url(gemeente: str, url: str, timeout: int) -> dict:
@@ -180,7 +204,7 @@ def _url_check(resultaten: list[dict], timeout: int, werkers: int) -> list[dict]
 
     with ThreadPoolExecutor(max_workers=werkers) as pool:
         futures = {
-            pool.submit(_check_url, r["gemeente"], r["url"], timeout): r["gemeente"]
+            pool.submit(_check_url, r["gemeente"], _check_url_voor_type(r), timeout): r["gemeente"]
             for r in te_checken
         }
         gedaan = 0
@@ -194,10 +218,15 @@ def _url_check(resultaten: list[dict], timeout: int, werkers: int) -> list[dict]
             rij["http"] = res
             code = res.get("http_status")
             fout = res.get("fout")
+            type_ = rij.get("type", "")
 
             if fout:
                 rij["problemen"].append(f"HTTP: {fout}")
                 rij["status"] = _STATUS_FOUT
+            elif code == 403 and type_ in _TYPE_VERWACHT_403:
+                # Site is bereikbaar maar beschermt zich tegen directe requests;
+                # de eigen scraper werkt met gepaste headers/sessie.
+                pass
             elif code and code >= 400:
                 rij["problemen"].append(f"HTTP {code}")
                 rij["status"] = _STATUS_FOUT
@@ -305,21 +334,28 @@ def _toon_samenvatting(resultaten: list[dict], scraper_check: list[tuple[str, bo
     console.print(type_tabel)
 
     # Status panel
-    http_ok   = sum(1 for r in resultaten if r.get("http") and r["http"].get("http_status") and r["http"]["http_status"] < 300)
-    http_fout = sum(1 for r in resultaten if r.get("http") and (r["http"].get("fout") or (r["http"].get("http_status") or 0) >= 400))
+    http_ok        = sum(1 for r in resultaten if r.get("http") and r["http"].get("http_status") and r["http"]["http_status"] < 300)
+    http_beschermd = sum(1 for r in resultaten if r.get("http")
+                         and r["http"].get("http_status") == 403
+                         and r.get("type") in _TYPE_VERWACHT_403)
+    http_fout      = sum(1 for r in resultaten
+                         if r.get("http")
+                         and (r["http"].get("fout") or (r["http"].get("http_status") or 0) >= 400)
+                         and not (r["http"].get("http_status") == 403 and r.get("type") in _TYPE_VERWACHT_403))
 
     regels = [
-        f"  Totaal in CSV:           [bold]{totaal}[/bold]",
-        f"  Zonder problemen  (OK):  [green]{ok}[/green]",
-        f"  Met problemen     (!!):  {'[red]' if fouten else '[green]'}{fouten}{'[/red]' if fouten else '[/green]'}",
-        f"  Lege URLs:               {'[yellow]' if lege_urls else '[green]'}{lege_urls}{'[/yellow]' if lege_urls else '[/green]'}",
-        f"  Onbekend type (overig):  {'[yellow]' if overig else '[green]'}{overig}{'[/yellow]' if overig else '[/green]'}",
-        f"  Scraper-bestanden:       {'[green]alle aanwezig[/green]' if not ontbreekt else f'[red]{ontbreekt} ontbreekt[/red]'}",
+        f"  Totaal in CSV:               [bold]{totaal}[/bold]",
+        f"  Zonder problemen  (OK):      [green]{ok}[/green]",
+        f"  Met problemen     (!!):      {'[red]' if fouten else '[green]'}{fouten}{'[/red]' if fouten else '[/green]'}",
+        f"  Lege URLs:                   {'[yellow]' if lege_urls else '[green]'}{lege_urls}{'[/yellow]' if lege_urls else '[/green]'}",
+        f"  Onbekend type (overig):      {'[yellow]' if overig else '[green]'}{overig}{'[/yellow]' if overig else '[/green]'}",
+        f"  Scraper-bestanden:           {'[green]alle aanwezig[/green]' if not ontbreekt else f'[red]{ontbreekt} ontbreekt[/red]'}",
     ]
     if url_check:
         regels += [
-            f"  URLs bereikbaar (2xx):   [green]{http_ok}[/green]",
-            f"  URLs met HTTP-fout:      {'[red]' if http_fout else '[green]'}{http_fout}{'[/red]' if http_fout else '[/green]'}",
+            f"  URLs bereikbaar (2xx):       [green]{http_ok}[/green]",
+            f"  URLs beschermd (403, OK):    [dim]{http_beschermd}[/dim]",
+            f"  URLs met HTTP-fout:          {'[red]' if http_fout else '[green]'}{http_fout}{'[/red]' if http_fout else '[/green]'}",
         ]
 
     alles_ok = fouten == 0 and not ontbreekt

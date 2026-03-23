@@ -1,0 +1,113 @@
++-----------------------------------------------------------------------------+
+| Health Checker � Besluitendatabank                                          |
+| CSV: C:\scraper-brugge\simba-source.csv                                     |
+| URL-check: aan                                                              |
++-----------------------------------------------------------------------------+
+------------------------------ Scraper-bestanden ------------------------------
++------------------------------------------------------+
+| Bestand                             |     Status     |
+|-------------------------------------+----------------|
+| scraper_brussel.py                  |       OK       |
+| scraper_deliberations.py            |       OK       |
+| scraper_docodis.py                  |       OK       |
+| scraper_drupal.py                   |       OK       |
+| scraper_ibabs.py                    |       OK       |
+| scraper_icordis.py                  |       OK       |
+| scraper_idelibe.py                  |       OK       |
+| scraper_imio.py                     |       OK       |
+| scraper_irisnet.py                  |       OK       |
+| scraper_ixelles.py                  |       OK       |
+| scraper_lblod.py                    |       OK       |
+| scraper_linkebeek.py                |       OK       |
+| scraper_menen.py                    |       OK       |
+| scraper_molenbeek.py                |       OK       |
+| scraper_onlinesmartcities.py        |       OK       |
+| scraper_provantwerpen.py            |       OK       |
+| scraper_pubcon.py                   |       OK       |
+| scraper_ranst.py                    |       OK       |
+| scraper_schaerbeek.py               |       OK       |
+| scraper_vlaamsbrabant.py            |       OK       |
+| scraper_waalse_provincies.py        |       OK       |
+| scraper_wordpress.py                |       OK       |
++------------------------------------------------------+
+
+URL-check: 575 URLs testen (timeout=10s, werkers=20)...
+  100/575 (6s)
+  200/575 (11s)
+  300/575 (14s)
+  400/575 (18s)
+  500/575 (22s)
+  575/575 (27s)
+----------------------------- Gemeente-overzicht ------------------------------
++------------------------------------------------------------------------------
+|    # | Gemeente                 | Type           |       HTTP       | Bevindi
+|------+--------------------------+----------------+------------------+--------
+|    1 | ! Amel                   | wordpress      |       403        | HTTP 40
+|    2 | ! Bernissart             | wordpress      |       403        | HTTP 40
+|    3 | ! Burg-Reuland           | wordpress      |       403        | HTTP 40
+|    4 | ! B�tgenbach             | wordpress      |       403        | HTTP 40
+|    5 | ! Floreffe               | wordpress      |       403        | HTTP 40
+|    6 | ! Herstappe              | overig         |   DNS mislukt    | type 'o
+|      |                          |                |                  | geen sc
+|      |                          |                |                  | beschik
+|      |                          |                |                  | HTTP: D
+|      |                          |                |                  | mislukt
+|    7 | ! Kelmis                 | wordpress      |       403        | HTTP 40
+|    8 | ! Koekelberg             | docodis        |       403        | HTTP 40
+|    9 | ! Linkebeek              | linkebeek      |       404        | HTTP 40
+|   10 | ! Lontzen                | wordpress      |       403        | HTTP 40
+|   11 | ! Manage                 | deliberations  |       401        | HTTP 40
+|   12 | ! Nazareth-De Pinte      | cipalschaubro� |   DNS mislukt    | HTTP: D
+|      |                          |                |                  | mislukt
+|   13 | ! Raeren                 | wordpress      |       403        | HTTP 40
+|   14 | ! Rumes                  | wordpress      |    verbinding    | HTTP:  
+|      |                          |                |    geweigerd     | verbind
+|      |                          |                |                  | geweige
+|   15 | ! Sankt Vith             | wordpress      |       404        | HTTP 40
+|   16 | ! Sint-Genesius-Rode     | linkebeek      |       404        | HTTP 40
+|   17 | ! Woluwe-Saint-Pierre    | wordpress      |       403        | HTTP 40
++------------------------------------------------------------------------------
+-------------------------------- Samenvatting ---------------------------------
+Verdeling per type                                              
++--------------------------------------------------------------+
+| Type               | Scraper                        | Aantal |
+|--------------------+--------------------------------+--------|
+| deliberations      | scraper_deliberations.py       |    167 |
+| cipalschaubroeck   | scraper_menen.py               |     79 |
+| smartcities        | scraper_onlinesmartcities.py   |     70 |
+| lblod              | scraper_lblod.py               |     62 |
+| meetingburger      | scraper_ranst.py               |     46 |
+| wordpress          | scraper_wordpress.py           |     36 |
+| idelibe            | scraper_idelibe.py             |     31 |
+| imio               | scraper_imio.py                |     29 |
+| drupal             | scraper_drupal.py              |     15 |
+| icordis            | scraper_icordis.py             |     12 |
+| irisnet            | scraper_irisnet.py             |     10 |
+| ibabs              | scraper_ibabs.py               |      2 |
+| linkebeek          | scraper_linkebeek.py           |      2 |
+| brussel            | scraper_brussel.py             |      1 |
+| forest             | scraper_drupal.py              |      1 |
+| overig             | -                              |      1 |
+| ingelmunster       | scraper_drupal.py              |      1 |
+| ixelles            | scraper_ixelles.py             |      1 |
+| docodis            | scraper_docodis.py             |      1 |
+| molenbeek          | scraper_molenbeek.py           |      1 |
+| pubcon             | scraper_pubcon.py              |      1 |
+| provantwerpen      | scraper_provantwerpen.py       |      1 |
+| hainaut            | scraper_waalse_provincies.py   |      1 |
+| luxemburg          | scraper_waalse_provincies.py   |      1 |
+| vlaamsbrabant      | scraper_vlaamsbrabant.py       |      1 |
+| brabantwallon      | scraper_waalse_provincies.py   |      1 |
+| schaerbeek         | scraper_schaerbeek.py          |      1 |
+| TOTAAL             |                                |    575 |
++--------------------------------------------------------------+
++---------------------------------- Status -----------------------------------+
+|   Totaal in CSV:           575                                              |
+|   Zonder problemen  (OK):  558                                              |
+|   Met problemen     (!!):  17                                               |
+|   Lege URLs:               0                                                |
+|   Onbekend type (overig):  1                                                |
+|   Scraper-bestanden:       alle aanwezig                                    |
+|   URLs bereikbaar (2xx):   499                                              |
+|   URLs met HTTP-fout:      75                                               |
++-----------------------------------------------------------------------------+
