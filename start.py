@@ -426,6 +426,7 @@ def hoofdmenu():
                 questionary.Choice("📥  Enkele gemeente scrapen",          value="scrapen"),
                 questionary.Choice("📦  Batch scrapen per websitetype",    value="batch"),
                 questionary.Choice("📋  Beschikbare organen bekijken",     value="organen"),
+                questionary.Choice("🩺  Bronnenlijst controleren",         value="health"),
                 questionary.Choice("🚪  Afsluiten",                        value="afsluiten"),
             ],
             style=STIJL,
@@ -438,6 +439,9 @@ def hoofdmenu():
 
         elif keuze == "organen":
             menu_organen(alle_gemeenten)
+
+        elif keuze == "health":
+            wizard_health_check()
 
         elif keuze == "scrapen":
             wizard_scrapen(alle_gemeenten)
@@ -537,6 +541,47 @@ def wizard_scrapen(alle_gemeenten: list[dict]):
     cmd = bouw_commando(gemeente, orgaan, maanden, output, doc_filter, agendapunten, zichtbaar)
     if cmd:
         voer_uit(cmd)
+
+    console.print()
+    questionary.press_any_key_to_continue("Druk op een toets om terug te gaan naar het hoofdmenu...").ask()
+
+
+def wizard_health_check():
+    """Voer een health check uit op de bronnenlijst."""
+    console.print()
+    console.print(Rule("[bold cyan]Bronnenlijst controleren[/bold cyan]", style="cyan"))
+
+    url_check = questionary.confirm(
+        "Ook HTTP-bereikbaarheid testen? (duurt ~30-60 seconden extra)",
+        default=False,
+        style=STIJL,
+    ).ask()
+    if url_check is None:
+        return
+
+    alleen_problemen = questionary.confirm(
+        "Alleen rijen met problemen tonen?",
+        default=False,
+        style=STIJL,
+    ).ask()
+    if alleen_problemen is None:
+        return
+
+    console.print()
+
+    cmd = ["uv", "run", "python", "health_check.py"]
+    if url_check:
+        cmd.append("--url-check")
+    if alleen_problemen:
+        cmd.append("--alleen-problemen")
+
+    console.print(f"[dim]Commando: {' '.join(cmd)}[/dim]\n")
+    try:
+        subprocess.run(cmd, cwd=str(SCRIPT_DIR))
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Onderbroken.[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Fout bij starten van health_check.py: {e}[/red]")
 
     console.print()
     questionary.press_any_key_to_continue("Druk op een toets om terug te gaan naar het hoofdmenu...").ask()

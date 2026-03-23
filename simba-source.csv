@@ -1,4 +1,4 @@
-Gemeente;Bron
+﻿Gemeente;Bron
 Aalst;https://raadpleeg-aalst.onlinesmartcities.be/
 Aalter;https://raadpleeg-aalter.onlinesmartcities.be/
 Aarschot;https://aarschot-echo.cipalschaubroeck.be/raadpleegomgeving/
@@ -413,9 +413,9 @@ Profondeville;https://www.deliberations.be/profondeville
 Provincie Antwerpen;https://www.provincieantwerpen.be/nl/politiek-bestuur/provincieraad/agenda-en-verslagen
 Provincie Henegouwen - Hainaut;https://www.hainaut.be/la-province/les-publications-legales-et-institutionnelles
 Provincie Limburg;https://raadpleeg-limburg.onlinesmartcities.be/
-Provincie Luik - Liège;https://deliberations.be/liege
+Provincie Luik - Liège;https://www.provincedeliege.be/fr/conseil/pvcra
 Provincie Luxemburg - Luxembourg;https://province.luxembourg.be/province-de-luxembourg/publications-legales-institutionnelles/ordre_du_jour
-Provincie Namen - Namur;https://deliberations.be/namur
+Provincie Namen - Namur;https://www.province.namur.be/conseil-provincial/05-pv-des-seances/
 Provincie Oost-Vlaanderen;https://raadpleeg-oost-vlaanderen.onlinesmartcities.be/
 Provincie Vlaams-Brabant;https://bestuur.vlaamsbrabant.be/publicaties
 Provincie Waals Brabant - Brabant Wallon;https://www.brabantwallon.be/le-brabant-wallon/vie-politique/publications-officielles

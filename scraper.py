@@ -242,8 +242,8 @@ def haal_vergadering_links_van_pagina(page) -> list[str]:
                 full_url = urljoin(BASE_URL, href)
                 if full_url not in links:
                     links.append(full_url)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [!] Fout bij ophalen vergaderlinks: {e}")
     return links
 
 
@@ -262,8 +262,8 @@ def open_orgaan_dropdown(page) -> bool:
             trigger.click()
             time.sleep(0.5)
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [!] Fout bij openen dropdown: {e}")
     return False
 
 
@@ -341,27 +341,37 @@ def huidige_maand_titel(page) -> str:
         return ""
 
 
+def _goto_met_fallback(page, url: str, timeout: int = 30000) -> None:
+    """Laad een pagina; valt terug op 'load' als 'networkidle' een timeout geeft."""
+    try:
+        page.goto(url, wait_until="networkidle", timeout=timeout)
+    except PlaywrightTimeout:
+        print("    [!] Timeout bij networkidle, probeer verder met load...")
+        page.goto(url, wait_until="load", timeout=timeout)
+
+
 def toon_organen():
     """Toon alle beschikbare organen."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
+        try:
+            page = browser.new_page()
+            _goto_met_fallback(page, KALENDER_URL)
 
-        print("\nBeschikbare organen op besluitvorming.brugge.be:")
-        print("-" * 50)
+            print("\nBeschikbare organen op besluitvorming.brugge.be:")
+            print("-" * 50)
 
-        checkboxes = page.query_selector_all("input[type='checkbox'][value]")
-        for cb in checkboxes:
-            val = cb.get_attribute("value") or ""
-            if val == "multiselect-all":
-                continue
-            label = page.query_selector(f"label[for='{val}']")
-            if label:
-                naam = label.get_attribute("title") or label.inner_text().strip()
-                print(f"  - {naam}")
-
-        browser.close()
+            checkboxes = page.query_selector_all("input[type='checkbox'][value]")
+            for cb in checkboxes:
+                val = cb.get_attribute("value") or ""
+                if val == "multiselect-all":
+                    continue
+                label = page.query_selector(f"label[for='{val}']")
+                if label:
+                    naam = label.get_attribute("title") or label.inner_text().strip()
+                    print(f"  - {naam}")
+        finally:
+            browser.close()
 
 
 def scrape(orgaan: str | None, output_map: str, maanden: int,
@@ -386,63 +396,65 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
-        )
-        page = context.new_page()
+        try:
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
+            )
+            page = context.new_page()
 
-        print("[1] Kalender laden...")
-        print("    (verbinding maken met besluitvorming.brugge.be...)")
-        page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
-        print("    (pagina geladen, wacht op interactieve elementen...)")
-        time.sleep(1)
-        print("    OK - Kalender beschikbaar")
+            print("[1] Kalender laden...")
+            print("    (verbinding maken met besluitvorming.brugge.be...)")
+            _goto_met_fallback(page, KALENDER_URL)
+            print("    (pagina geladen, wacht op interactieve elementen...)")
+            time.sleep(1)
+            print("    OK - Kalender beschikbaar")
 
-        if orgaan:
-            print(f"[2] Filter instellen: {orgaan}")
-            print("    (zoeken in beschikbare organen...)")
-            if activeer_orgaan_filter(page, orgaan):
-                print("    OK - Filter actief")
+            if orgaan:
+                print(f"[2] Filter instellen: {orgaan}")
+                print("    (zoeken in beschikbare organen...)")
+                if activeer_orgaan_filter(page, orgaan):
+                    print("    OK - Filter actief")
+                else:
+                    print("    [!] Filter kon niet ingesteld worden - alle organen verwerken")
             else:
-                print("    [!] Filter kon niet ingesteld worden - alle organen verwerken")
-        else:
-            print("[2] Geen filter (alle organen)")
+                print("[2] Geen filter (alle organen)")
 
-        print(f"[3] Doorzoek {maanden} maand(en)...\n")
+            print(f"[3] Doorzoek {maanden} maand(en)...\n")
 
-        for maand_nr in range(maanden):
-            maand_titel = huidige_maand_titel(page)
-            print(f"  [{maand_titel or f'Maand {maand_nr+1}'}]")
-            print(f"    (laden van vergaderingen...)")
-            
-            vergaderingen = haal_vergadering_links_van_pagina(page)
-            nieuwe = [v for v in vergaderingen if v not in alle_vergadering_urls]
-            alle_vergadering_urls.update(vergaderingen)
+            for maand_nr in range(maanden):
+                maand_titel = huidige_maand_titel(page)
+                print(f"  [{maand_titel or f'Maand {maand_nr+1}'}]")
+                print(f"    (laden van vergaderingen...)")
 
-            print(f"    {len(vergaderingen)} vergaderingen gevonden, {len(nieuwe)} nieuw")
+                vergaderingen = haal_vergadering_links_van_pagina(page)
+                nieuwe = [v for v in vergaderingen if v not in alle_vergadering_urls]
+                alle_vergadering_urls.update(vergaderingen)
 
-            for idx, verg_url in enumerate(nieuwe, 1):
-                print(f"    ({idx}/{len(nieuwe)}) vergadering verwerken...", end="", flush=True)
-                n = verwerk_vergadering(
-                    verg_url, output_pad, ook_agendapunten,
-                    orgaan_filter=None,
-                    document_filter=document_filter,
-                )
-                print(f" -> {n} PDF(s)")
-                totaal_downloads += n
-                if n > 0:
-                    vergaderingen_met_docs += 1
+                print(f"    {len(vergaderingen)} vergaderingen gevonden, {len(nieuwe)} nieuw")
 
-            # Navigeer naar vorige maand (tenzij het de laatste is)
-            if maand_nr < maanden - 1:
-                print(f"    (naar vorige maand...)")
-                nieuwe_maand = navigeer_vorige_maand(page)
-                if nieuwe_maand is None:
-                    print(f"\n  [!] Kan niet verder terug, gestopt na {maand_nr+1} maand(en).")
-                    break
-            print()
+                for idx, verg_url in enumerate(nieuwe, 1):
+                    print(f"    ({idx}/{len(nieuwe)}) vergadering verwerken...", end="", flush=True)
+                    n = verwerk_vergadering(
+                        verg_url, output_pad, ook_agendapunten,
+                        orgaan_filter=None,
+                        document_filter=document_filter,
+                    )
+                    print(f" -> {n} PDF(s)")
+                    totaal_downloads += n
+                    if n > 0:
+                        vergaderingen_met_docs += 1
 
-        browser.close()
+                # Navigeer naar vorige maand (tenzij het de laatste is)
+                if maand_nr < maanden - 1:
+                    print(f"    (naar vorige maand...)")
+                    nieuwe_maand = navigeer_vorige_maand(page)
+                    if nieuwe_maand is None:
+                        print(f"\n  [!] Kan niet verder terug, gestopt na {maand_nr+1} maand(en).")
+                        break
+                print()
+
+        finally:
+            browser.close()
 
     print(f"\n{'='*60}")
     print(f"  Klaar!")

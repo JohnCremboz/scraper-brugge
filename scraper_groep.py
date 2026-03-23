@@ -306,6 +306,8 @@ _WAALSE_WP_HOSTS: frozenset[str] = frozenset({
     "www.trooz.be",
     "www.vaux-sur-sure.be",
     "www.hastiere.be",
+    "www.pontacelles.be",
+    "www.province.namur.be",
 })
 
 # iDélibé commune ID's (www.conseilcommunal.be/commune/{id})
@@ -372,6 +374,8 @@ def detecteer_type(url: str) -> str:
     # Waalse WordPress/Plone-gemeenten op hostname
     if urlparse(url).netloc.lower() in _WAALSE_WP_HOSTS:
         return "wordpress"
+    if "provincedeliege.be" in u:
+        return "drupal"
     if re.search(r"/sites/[^/]+/files", u) or "/system/files" in u:
         return "drupal"
     if "/ac-file/docodis" in u:

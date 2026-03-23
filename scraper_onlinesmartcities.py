@@ -293,8 +293,8 @@ def haal_vergadering_links_van_pagina(page) -> list[str]:
                 full_url = urljoin(BASE_URL, href)
                 if full_url not in links:
                     links.append(full_url)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [!] Fout bij ophalen vergaderlinks: {e}")
     return links
 
 
@@ -377,62 +377,68 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
-        )
-        page = context.new_page()
+        try:
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
+            )
+            page = context.new_page()
 
-        print("[1] Kalender laden...")
-        print("    (verbinding maken...)")
-        page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
-        print("    (wacht op elementen...)")
-        time.sleep(1)
-        print("    OK")
+            print("[1] Kalender laden...")
+            print("    (verbinding maken...)")
+            try:
+                page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
+            except PlaywrightTimeout:
+                print("    [!] Timeout bij networkidle, probeer verder met load...")
+                page.goto(KALENDER_URL, wait_until="load", timeout=30000)
+            print("    (wacht op elementen...)")
+            time.sleep(1)
+            print("    OK")
 
-        if orgaan:
-            print(f"[2] Filter instellen: {orgaan}")
-            print("    (zoeken in beschikbare organen...)")
-            if activeer_orgaan_filter(page, orgaan):
-                print("    OK - Filter actief")
+            if orgaan:
+                print(f"[2] Filter instellen: {orgaan}")
+                print("    (zoeken in beschikbare organen...)")
+                if activeer_orgaan_filter(page, orgaan):
+                    print("    OK - Filter actief")
+                else:
+                    print("    [!] Filter kon niet ingesteld worden")
             else:
-                print("    [!] Filter kon niet ingesteld worden")
-        else:
-            print("[2] Geen filter (alle organen)")
+                print("[2] Geen filter (alle organen)")
 
-        print(f"[3] Doorzoek {maanden} maand(en)...\n")
+            print(f"[3] Doorzoek {maanden} maand(en)...\n")
 
-        for maand_nr in range(maanden):
-            maand_titel = huidige_maand_titel(page)
-            print(f"  [{maand_titel or f'Maand {maand_nr+1}'}]")
-            print(f"    (laden van vergaderingen...)")
+            for maand_nr in range(maanden):
+                maand_titel = huidige_maand_titel(page)
+                print(f"  [{maand_titel or f'Maand {maand_nr+1}'}]")
+                print(f"    (laden van vergaderingen...)")
 
-            vergaderingen = haal_vergadering_links_van_pagina(page)
-            nieuwe = [v for v in vergaderingen if v not in alle_vergadering_urls]
-            alle_vergadering_urls.update(vergaderingen)
+                vergaderingen = haal_vergadering_links_van_pagina(page)
+                nieuwe = [v for v in vergaderingen if v not in alle_vergadering_urls]
+                alle_vergadering_urls.update(vergaderingen)
 
-            print(f"    {len(vergaderingen)} vergaderingen gevonden, {len(nieuwe)} nieuw te verwerken")
+                print(f"    {len(vergaderingen)} vergaderingen gevonden, {len(nieuwe)} nieuw te verwerken")
 
-            for idx, verg_url in enumerate(nieuwe, 1):
-                print(f"    ({idx}/{len(nieuwe)}) verwerken...", end="", flush=True)
-                n = verwerk_vergadering(
-                    verg_url, output_pad, ook_agendapunten,
-                    orgaan_filter=None,
-                    document_filter=document_filter,
-                )
-                print(f" -> {n} PDF(s)")
-                totaal_downloads += n
-                if n > 0:
-                    vergaderingen_met_docs += 1
+                for idx, verg_url in enumerate(nieuwe, 1):
+                    print(f"    ({idx}/{len(nieuwe)}) verwerken...", end="", flush=True)
+                    n = verwerk_vergadering(
+                        verg_url, output_pad, ook_agendapunten,
+                        orgaan_filter=None,
+                        document_filter=document_filter,
+                    )
+                    print(f" -> {n} PDF(s)")
+                    totaal_downloads += n
+                    if n > 0:
+                        vergaderingen_met_docs += 1
 
-            if maand_nr < maanden - 1:
-                print(f"    (navigeren naar vorige maand...)")
-                nieuwe_maand = navigeer_vorige_maand(page)
-                if nieuwe_maand is None:
-                    print(f"\n  [!] Kan niet verder terug, gestopt na {maand_nr+1} maand(en).")
-                    break
-            print()
+                if maand_nr < maanden - 1:
+                    print(f"    (navigeren naar vorige maand...)")
+                    nieuwe_maand = navigeer_vorige_maand(page)
+                    if nieuwe_maand is None:
+                        print(f"\n  [!] Kan niet verder terug, gestopt na {maand_nr+1} maand(en).")
+                        break
+                print()
 
-        browser.close()
+        finally:
+            browser.close()
 
     print(f"\n{'='*60}")
     print(f"  Klaar!")
