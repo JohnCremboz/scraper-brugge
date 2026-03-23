@@ -333,10 +333,29 @@ GEMEENTEN: dict[str, dict] = {
     "www.hastiere.be": {
         "naam": "Hastière",
         "letsgocity": True,
-        # LetsGoCity (letsgocity.be) SPA platform — API op mapi.letsgocity.be
-        # Portal: "hastiere"
-        # PV-menu UID: f2e9b70a-af93-4d97-abf5-29cb5b307617
-        # PDF-download: https://files.letsgocity.be/{uid}
+        "portal": "hastiere",
+        "pv_menu_uid": "f2e9b70a-af93-4d97-abf5-29cb5b307617",
+    },
+    "www.courcelles.eu": {
+        "naam": "Courcelles",
+        "letsgocity": True,
+        "portal": "courcelles-eu",
+        "pv_slug": "proces-verbaux",
+    },
+    "www.pontacelles.be": {
+        "naam": "Pont-à-Celles",
+        "listing_pad": "/services/le-conseil-communal/proces-verbaux/",
+        "datum_in_tekst": True,  # linktekst is de vergaderdatum als "DD/MM/YYYY"
+    },
+    "www.province.namur.be": {
+        "naam": "Provincie Namen - Namur",
+        # Huidige-jaar-PVs op /conseil-provincial/05-pv-des-seances/
+        # Archief 2025 op /documents-du-conseil/2025-2/ (jaarlijks bijwerken)
+        "listing_paden": [
+            "/conseil-provincial/05-pv-des-seances/",
+            "/documents-du-conseil/2025-2/",
+        ],
+        "datum_in_tekst": True,  # linktekst = "23 janvier 2026" (Frans maandnaam)
     },
 }
 
@@ -627,91 +646,118 @@ def _zoek_gemeente(netloc: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# LetsGoCity-platform (bijv. Hastière)
+# LetsGoCity-platform (bijv. Hastière, Courcelles)
 # ---------------------------------------------------------------------------
 
 _LGC_MAPI = "https://mapi.letsgocity.be"
 _LGC_FILES = "https://files.letsgocity.be"
-_HASTIERE_PORTAL = "hastiere"
-_HASTIERE_PV_MENU_UID = "f2e9b70a-af93-4d97-abf5-29cb5b307617"
+
+
+def _lgc_pdfs_uit_content(data: list, grensdatum, grensjaar_hint: str | None = None) -> list[dict]:
+    """Extraheer PDF-items uit een LetsGoCity content-response."""
+    pdfs: list[dict] = []
+    for block in data:
+        if block.get("type") != "lgc-file":
+            continue
+        for file_item in block.get("items", []):
+            uid = file_item.get("uid", "")
+            if not uid:
+                continue
+            if "pdf" not in file_item.get("contentType", "").lower():
+                continue
+            filename = file_item.get("filename") or f"{uid}.pdf"
+            if not filename.lower().endswith(".pdf"):
+                filename += ".pdf"
+            datum = datum_uit_pad(filename)
+            if datum is not None and datum < grensdatum:
+                continue
+            datum_str = datum.isoformat() if datum else (grensjaar_hint or "")
+            pdfs.append({"url": f"{_LGC_FILES}/{uid}", "naam": filename, "datum": datum_str})
+    return pdfs
 
 
 def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tuple[int, int]:
-    """Scrape een gemeente op het LetsGoCity-platform (bijv. Hastière).
+    """Scrape een gemeente op het LetsGoCity-platform (bijv. Hastière, Courcelles).
 
     Gebruikt de mapi.letsgocity.be REST API — geen HTML scraping nodig.
     PDF-bestanden staan op files.letsgocity.be/{uid}.
+
+    Config-opties:
+        portal          LetsGoCity portal-ID (bv. "hastiere", "courcelles-eu")
+        pv_menu_uid     UID van het PV-menu → lijst jaarspagina's (Hastière-stijl)
+        pv_slug         Directe content-slug met alle PVs op één pagina (Courcelles-stijl)
     """
     import requests as _req  # lokale import om globale SESSION niet te verstoren
 
     grensdatum = date.today() - timedelta(days=maanden * 31)
     naam = config["naam"]
+    portal = config["portal"]
     gem_dir = output_dir / sanitize_filename(naam)
     gem_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("▶  %s  [LetsGoCity]  (grensdatum=%s)", naam, grensdatum)
 
-    # Haal het PV-jaarsmenu op
-    menu_url = (
-        f"{_LGC_MAPI}/core-content-service/api/v1/web/portal"
-        f"/{_HASTIERE_PORTAL}/menu/{_HASTIERE_PV_MENU_UID}"
-    )
-    try:
-        resp = _req.get(menu_url, timeout=30)
-        resp.raise_for_status()
-    except Exception as exc:
-        logger.error("Kon LetsGoCity-menu niet ophalen: %s", exc)
-        return 0, 0
-
     alle_pdfs: list[dict] = []
 
-    for item in resp.json().get("data", []):
-        action_path = item.get("action", {}).get("path", "")
-        if "/information/" not in action_path:
-            continue
-        slug = action_path.split("/information/")[-1].split("?")[0].rstrip("/")
+    if "pv_menu_uid" in config:
+        # Hasitère-stijl: menu-UID → lijst jaarspagina's
+        menu_url = (
+            f"{_LGC_MAPI}/core-content-service/api/v1/web/portal"
+            f"/{portal}/menu/{config['pv_menu_uid']}"
+        )
+        try:
+            resp = _req.get(menu_url, timeout=30)
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.error("Kon LetsGoCity-menu niet ophalen: %s", exc)
+            return 0, 0
 
-        # Schat het jaar uit de slug (bijv. "proces-verbaux-conseil-communal-2025")
-        jaar_m = re.search(r"(20\d{2})$", slug)
-        if jaar_m and int(jaar_m.group(1)) < grensdatum.year:
-            continue  # Volledig jaar is te oud
+        for item in resp.json().get("data", []):
+            action_path = item.get("action", {}).get("path", "")
+            if "/information/" not in action_path:
+                continue
+            slug = action_path.split("/information/")[-1].split("?")[0].rstrip("/")
 
-        # Haal de inhoudspagina op
+            jaar_m = re.search(r"(20\d{2})$", slug)
+            if jaar_m and int(jaar_m.group(1)) < grensdatum.year:
+                continue
+
+            content_url = (
+                f"{_LGC_MAPI}/core-content-service/api/v1/web/portal"
+                f"/{portal}/content/{slug}?env=desktop&maps=false"
+            )
+            try:
+                cr = _req.get(content_url, timeout=30)
+                cr.raise_for_status()
+            except Exception as exc:
+                logger.warning("Kon inhoud niet ophalen (%s): %s", slug, exc)
+                continue
+
+            alle_pdfs.extend(
+                _lgc_pdfs_uit_content(
+                    cr.json().get("data", []),
+                    grensdatum,
+                    jaar_m.group(1) if jaar_m else None,
+                )
+            )
+
+    elif "pv_slug" in config:
+        # Courcelles-stijl: directe content-slug met alle jaren op één pagina
         content_url = (
             f"{_LGC_MAPI}/core-content-service/api/v1/web/portal"
-            f"/{_HASTIERE_PORTAL}/content/{slug}?env=desktop&maps=false"
+            f"/{portal}/content/{config['pv_slug']}?env=desktop&maps=false"
         )
         try:
             cr = _req.get(content_url, timeout=30)
             cr.raise_for_status()
         except Exception as exc:
-            logger.warning("Kon inhoud niet ophalen (%s): %s", slug, exc)
-            continue
+            logger.error("Kon LetsGoCity-inhoud niet ophalen: %s", exc)
+            return 0, 0
+        alle_pdfs.extend(_lgc_pdfs_uit_content(cr.json().get("data", []), grensdatum))
 
-        for block in cr.json().get("data", []):
-            if block.get("type") != "lgc-file":
-                continue
-            for file_item in block.get("items", []):
-                uid = file_item.get("uid", "")
-                if not uid:
-                    continue
-                content_type = file_item.get("contentType", "")
-                if "pdf" not in content_type.lower():
-                    continue
-                filename = file_item.get("filename") or f"{uid}.pdf"
-                if not filename.lower().endswith(".pdf"):
-                    filename += ".pdf"
-
-                datum = datum_uit_pad(filename)
-                if datum is not None and datum < grensdatum:
-                    continue  # Document is te oud
-
-                datum_str = datum.isoformat() if datum else (jaar_m.group(1) if jaar_m else "")
-                alle_pdfs.append({
-                    "url": f"{_LGC_FILES}/{uid}",
-                    "naam": filename,
-                    "datum": datum_str,
-                })
+    else:
+        logger.error("LetsGoCity-config vereist 'pv_menu_uid' of 'pv_slug'")
+        return 0, 0
 
     logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
 
@@ -831,6 +877,10 @@ def scrape_gemeente(
                 r = _get(sf)
                 if r and r.status_code == 200:
                     paginas.append((r.text, sf))
+            if not sf_links and config.get("subfolder_fallback_direct"):
+                # Geen subfolders gevonden op deze URL (bijv. huidige-jaar-pagina
+                # in listing_paden naast een archief-URL): behandel als directe listing.
+                paginas.append((html, listing_url))
         else:
             paginas.append((html, listing_url))
 

@@ -153,6 +153,12 @@ GEMEENTEN: dict[str, dict] = {
         # Datum zit in <time class="datetime" datetime="YYYY-MM-DD..."> in elke kaart
         "kaart_klassen": ["publication", "conseil"],
     },
+    "www.provincedeliege.be": {
+        "naam": "Provincie Luik - Liège",
+        "listing_pad": "/fr/conseil/pvcra",
+        # PDFs op pad /conseillers/doc/pva/YYYYMMDD.pdf (Drupal 7, niet /sites/*/files/)
+        "pdf_re": re.compile(r"/conseillers/doc/pva/\d{8}\.pdf", re.IGNORECASE),
+    },
 }
 
 

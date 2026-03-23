@@ -1,11 +1,11 @@
 # TODO — Besluitendatabank Scraper
 
-## Huidige status (22 maart 2026)
+## Huidige status (23 maart 2026)
 
 **Dekking:** 574/575 rijen in simba-source.csv hebben een werkende scraper (**99.8%**)
 **CSV:** 575 rijen = 10 provincies + 565 gemeenten (compleet, matcht Wikipedia)
 **Geblokkeerd:** 1 gemeente (Herstappe — DNS-fout, ~85 inwoners, geen werkende website)
-**Scrapers:** 21 standalone scrapers + 1 batch-orchestrator (`scraper_groep.py`)
+**Scrapers:** 22 standalone scrapers + 1 batch-orchestrator (`scraper_groep.py`)
 
 | Type | Gemeenten/entiteiten | Scraper |
 |------|---------------------|---------|
@@ -15,8 +15,9 @@
 | LBLOD | 63 | scraper_lblod.py |
 | MeetingBurger | 46 | scraper_ranst.py |
 | iDélibé (conseilcommunal.be) | 39 | scraper_idelibe.py |
-| WordPress / TYPO3 / Plone | 32 | scraper_wordpress.py |
-| Drupal / TYPO3 directe PDFs | 13 | scraper_drupal.py |
+| WordPress / TYPO3 / Plone | 34 | scraper_wordpress.py |
+| iMio / Plone directe PDFs | 15 | scraper_imio.py |
+| Drupal / TYPO3 directe PDFs | 14 | scraper_drupal.py |
 | Icordis CMS (LCP nv) | 12 | scraper_icordis.py |
 | Irisnet (Brusselse gem.) | 10 | scraper_irisnet.py |
 | iBabs | 2 | scraper_ibabs.py |
@@ -50,8 +51,8 @@ Alle 10 Belgische provincies zijn nu gedekt:
 | Henegouwen | hainaut | scraper_waalse_provincies.py |
 | Luxemburg | luxemburg | scraper_waalse_provincies.py |
 | Waals-Brabant | brabantwallon | scraper_waalse_provincies.py |
-| Luik | deliberations | scraper_deliberations.py |
-| Namen | deliberations | scraper_deliberations.py |
+| Luik | Drupal 7 (provincedeliege.be) | scraper_drupal.py |
+| Namen | WordPress (province.namur.be) | scraper_wordpress.py |
 
 ---
 
@@ -90,7 +91,7 @@ Alle 10 Belgische provincies zijn nu gedekt:
 
 ## Waalse gemeenten
 
-### WordPress / Plone / LetsGoCity (23 gemeenten) ✅
+### WordPress / Plone / LetsGoCity (28 gemeenten) ✅
 
 | Gemeente | Domein | Opmerkingen |
 |----------|--------|-------------|
@@ -120,6 +121,23 @@ Alle 10 Belgische provincies zijn nu gedekt:
 | Trooz | trooz.be | Plone imio.smartweb |
 | Vaux-sur-Sûre | vaux-sur-sure.be | Plone imio.smartweb |
 | Hastière | hastiere.be | LetsGoCity SPA, REST API |
+| Courcelles | courcelles.eu | LetsGoCity SPA, REST API |
+| Pont-à-Celles | pontacelles.be | WordPress, datum in linktekst (DD/MM/YYYY) |
+| Provincie Namen | province.namur.be | WordPress, Frans maandnaam; listing_paden + archief YYYY-2 (jaarlijks bijwerken) |
+
+### iMio / Plone directe PDFs (scraper_imio.py) ✅
+
+Gemeenten met iMio/Plone-websites die PDFs direct aanbieden (niet via deliberations.be).
+
+| Gemeente | Domein | Opmerkingen |
+|----------|--------|-------------|
+| La Hulpe | lahulpe.be | ajax_load=1, jaar-subpagina's (Structuur A) |
+| Manage | manage-commune.be | ajax_load=1, alles op één pagina (Structuur B) |
+| … (13 andere) | … | zie GEMEENTEN in scraper_imio.py |
+
+> **Datumfix (23 mrt 2026)**: `_datum_uit_pad` in scraper_imio.py had een bug waarbij `DD-MM-YYYY`
+> bestandsnamen de regex matchten op `DD-MM-20` → year=2020+DD. Opgelost door drie aparte
+> patronen in prioriteitsvolgorde (DD-MM-YYYY eerst).
 
 ### iDélibé / conseilcommunal.be (39 gemeenten) ✅
 
@@ -128,6 +146,10 @@ Alle 39 gemeenten via REST API (`/ApiCitoyen/public/v1/`) — `scraper_idelibe.p
 ### Deliberations.be (1 gemeente) ✅
 
 - Libramont-Chevigny → `www.deliberations.be/libramont`
+
+### Provincie Luik (scraper_drupal.py) ✅
+
+- `www.provincedeliege.be` — Drupal 7, listing `/fr/conseil/pvcra`, PDF-pad `/conseillers/doc/pva/YYYYMMDD.pdf`
 
 ---
 
@@ -140,6 +162,10 @@ Alle 39 gemeenten via REST API (`/ApiCitoyen/public/v1/`) — `scraper_idelibe.p
 ---
 
 ## Openstaande taken
+
+### Onderhoud (jaarlijks)
+
+- [ ] **Province Namur**: voeg `/documents-du-conseil/2026-2/` toe aan `listing_paden` zodra die pagina aangemaakt wordt (eind 2026/begin 2027)
 
 ### Code-kwaliteit (nice-to-have)
 
@@ -180,8 +206,9 @@ scraper-brugge/
 ├── scraper_icordis.py           # Icordis CMS/LCP — 12 gem. (*/file/download)
 ├── scraper_linkebeek.py         # LCP agenda-notulen — 2 gem. (Linkebeek, SGR)
 ├── scraper_docodis.py           # Docodis CMS — 1 gem. (Koekelberg)
-├── scraper_drupal.py            # Drupal/TYPO3 direct PDF — 13 gem. incl. Ingelmunster, Forest
-├── scraper_wordpress.py         # WordPress/TYPO3/Plone — 32 gem.
+├── scraper_imio.py              # iMio/Plone directe PDFs — 15 gem. (La Hulpe, Manage, …)
+├── scraper_drupal.py            # Drupal/TYPO3 direct PDF — 14 gem. incl. Prov. Luik
+├── scraper_wordpress.py         # WordPress/TYPO3/Plone — 34 gem. incl. Prov. Namen
 ├── scraper_idelibe.py           # iDélibé/conseilcommunal.be — 39 Waalse gem. (REST API)
 ├── scraper_pubcon.py            # Pubcon/Tobibus LBLOD — 1 gem. (Oudsbergen)
 ├── scraper_provantwerpen.py     # Prov. Antwerpen
@@ -205,4 +232,5 @@ scraper-brugge/
 - **TYPO3** (Ingelmunster): `pdf_re: _TYPO3_PDF_RE` + `vereist_datum: True` in scraper_drupal.py config
 - **Forest** (www.forest.brussels): `kaart_klassen: ["publication", "conseil"]` triggert kaart-gebaseerde parsing; datum via `<time class="datetime" datetime="...">` ipv URL
 - **Waalse provincies**: `scraper_waalse_provincies.py --provincie hainaut|luxemburg|brabantwallon`; auto-detectie via `--base-url`
-
+- **iMio ajax_load**: Plone SPA-sites (lahulpe.be, manage-commune.be) vereisen `?ajax_load=1` query-param; geconfigureerd via `ajax_load: True` in GEMEENTEN
+- **subfolder_fallback_direct** (scraper_wordpress.py): als een URL in `listing_paden` geen subfolders heeft die matchen op `subfolder_re`, val terug op directe PDF-extractie
