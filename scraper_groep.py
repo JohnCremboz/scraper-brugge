@@ -320,7 +320,7 @@ _WAALSE_WP_HOSTS: frozenset[str] = frozenset({
     "www.bernissart.be", "www.floreffe.be", "www.waterloo.be",
     "www.fernelmont.be", "www.chievres.be", "www.verlaine.be",
     "www.brugelette.be", "www.fosses-la-ville.be", "www.pecq.be",
-    "www.herbeumont.be", "www.lalouviere.be", "www.rumes.be",
+    "www.herbeumont.be", "www.lalouviere.be", "rumes-online.be",
     "www.antoing.net", "www.ans-ville.be", "www.aubange.be",
     "www.burdinne.be",
     "www.crisnee.be",

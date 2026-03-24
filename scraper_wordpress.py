@@ -129,10 +129,11 @@ GEMEENTEN: dict[str, dict] = {
     "www.burg-reuland.be": {
         "naam": "Burg-Reuland",
         "listing_paden": [
-            "/unsere-gemeinde/politik/sitzungen/tagesordnungen-des-gemeinderats",
-            "/unsere-gemeinde/politik/sitzungen/sitzungsprotokolle-des-gemeinderats",
+            "/unsere-gemeinde/politik/sitzungen/tagesordnungen-des-gr/",
+            "/unsere-gemeinde/politik/sitzungen/sitzungsprotokolle-des-gr/",
         ],
         # PDF: /wp-content/uploads/to-gemeinderat-vom-DD-MM-YYYY*.pdf
+        # of sitzungsprotokoll-gemeinderat-DDMMYYYY-oeff.pdf (geen scheidingstekens)
     },
     "www.eupen.be": {
         "naam": "Eupen",
@@ -247,11 +248,16 @@ GEMEENTEN: dict[str, dict] = {
         # Datum uit URL-pad: /seances-YYYY/DD-maandnaam.pdf
         # of via DD-MM-YYYY in bestandsnaam (pv-seance-cc-20-01-2025.pdf)
     },
-    "www.rumes.be": {
+    "rumes-online.be": {
         "naam": "Rumes",
         "listing_pad": "/accueil/vie-politique/le-conseil-communal/proces-verbal/",
+        "subfolder_crawl": True,
+        # Sessie-subpagina's: /conseil-communal-du-{slug}/ (geen jaar in URL)
+        "subfolder_re": r"/conseil-communal-du-[^/]+/?$",
+        "subfolder_neem_alle": True,   # neem alle sessies (geen n_sf-limiet)
+        "subfolder_ook_root": True,    # ook directe PDFs op listing-pagina (2022-2023)
         "pdf_re": _RUMES_PDF_RE,
-        # Bestandsnaam: CC2023-09-28.pdf → YYYY-MM-DD
+        # Bestandsnamen: CC2023-09-28.pdf of PV-CONSEIL-COMMUNAL-DU-29-janvier-2026.pdf
     },
     "www.antoing.net": {
         "naam": "Antoing",
@@ -449,6 +455,14 @@ def datum_uit_pad(pad: str) -> date | None:
     if m:
         try:
             return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+
+    # Bestandsnaam: DDMMYYYY tussen koppeltekens (bijv. sitzungsprotokoll-gemeinderat-23122025-oeff.pdf)
+    m = re.search(r"-([0-2]\d|3[01])(0[1-9]|1[0-2])(20\d{2})-", pad)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
         except ValueError:
             pass
 
@@ -869,6 +883,8 @@ def scrape_gemeente(
                     sf for sf in sf_links
                     if (mj := jaar_re_pat.search(sf)) and int(mj.group(1)) >= grensdatum.year
                 ]
+            elif config.get("subfolder_neem_alle"):
+                pass  # neem alle gevonden subpagina's (sessie-subpagina's zonder jaar in URL)
             else:
                 # Jaar niet betrouwbaar in URL: neem laatste N submappen
                 n_sf = max(2, maanden // 12 + 1)
@@ -877,7 +893,10 @@ def scrape_gemeente(
                 r = _get(sf)
                 if r and r.status_code == 200:
                     paginas.append((r.text, sf))
-            if not sf_links and config.get("subfolder_fallback_direct"):
+            if config.get("subfolder_ook_root"):
+                # Ook de listing-pagina zelf toevoegen (voor directe PDFs naast subpagina's)
+                paginas.append((html, listing_url))
+            elif not sf_links and config.get("subfolder_fallback_direct"):
                 # Geen subfolders gevonden op deze URL (bijv. huidige-jaar-pagina
                 # in listing_paden naast een archief-URL): behandel als directe listing.
                 paginas.append((html, listing_url))

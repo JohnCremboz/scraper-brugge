@@ -171,8 +171,8 @@ Resultaat van `uv run python health_check.py --url-check`: **17 echte problemen*
 | Gemeente | Type | HTTP | Oorzaak |
 |----------|------|------|---------|
 | Herstappe | overig | DNS mislukt | Geen werkende website (bekende gap) |
-| Nazareth-De Pinte | cipalschaubroeck | DNS mislukt | CipalSchaubroeck-domein verdwenen? CSV-URL vervangen door correcte |
-| Rumes | wordpress | verbinding geweigerd | Site offline |
+| ~~Nazareth-De Pinte~~ | ~~cipalschaubroeck~~ | ~~DNS mislukt~~ | **Opgelost**: fusiegemeente (2025) gebruikt nieuw platform `nazareth-depinte-raadpleegomgeving.csecho.be`; CSV bijgewerkt |
+| ~~Rumes~~ | ~~wordpress~~ | ~~verbinding geweigerd~~ | ~~Site offline~~ → **opgelost**: nieuw domein `rumes-online.be` (scraper bijgewerkt) |
 | Sankt Vith | wordpress | 404 | WordPress-pagina verplaatst? |
 | Linkebeek | linkebeek | 404 | Linkebeek-scraper-URL stuk |
 | Sint-Genesius-Rode | linkebeek | 404 | Linkebeek-scraper-URL stuk |
@@ -180,7 +180,7 @@ Resultaat van `uv run python health_check.py --url-check`: **17 echte problemen*
 | Koekelberg | docodis | 403 | Docodis-site geblokkeerd bij directe requests |
 | Amel | wordpress | 403 | Bot-bescherming (scraper wellicht nog OK) |
 | Bernissart | wordpress | 403 | Bot-bescherming |
-| Burg-Reuland | wordpress | 403 | Bot-bescherming |
+| ~~Burg-Reuland~~ | ~~wordpress~~ | ~~403~~ | ~~Bot-bescherming~~ → **opgelost**: listing-URLs hernoemd naar `-des-gr/`; scraper bijgewerkt + DDMMYYYY-datumpatroon toegevoegd |
 | Bütgenbach | wordpress | 403 | Bot-bescherming |
 | Floreffe | wordpress | 403 | Bot-bescherming |
 | Kelmis | wordpress | 403 | Bot-bescherming |

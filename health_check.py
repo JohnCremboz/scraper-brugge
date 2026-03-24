@@ -40,7 +40,7 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0
 
 # Types waarbij de CSV-URL een bestandspad-template is (bijv. /file/download);
 # voor de bereikbaarheidscheck wordt alleen scheme+host gebruikt.
-_URL_IS_TEMPLATE: frozenset[str] = frozenset({"icordis", "drupal", "ingelmunster", "forest"})
+_URL_IS_TEMPLATE: frozenset[str] = frozenset({"icordis", "drupal", "ingelmunster", "forest", "linkebeek"})
 
 # Types die stelselmatig 403 teruggeven bij directe requests (bot-bescherming),
 # maar waarvan de scraper met eigen sessie/headers wél werkt.
