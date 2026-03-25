@@ -139,21 +139,26 @@ def verwerk_vergadering(meeting: dict, output_pad: Path,
         datum_label = mid[:8]
 
     verg_url = f"{CONTEXT}/zittingen/{mid}"
-    map_naam = sanitize_filename(f"{organ}_{datum_label}_{mid[:8]}")
-    verg_map = output_pad / map_naam
-    verg_map.mkdir(parents=True, exist_ok=True)
 
     print(f"\n    [{organ}] {dt_str[:10] if dt_str else mid[:8]}")
 
     downloads = 0
     verwerkt_ids: set[str] = set()
 
+    # Menen gebruikt "zittingsverslag" i.p.v. "notulen" — voeg aliassen toe zodat
+    # het TUI-filter "notulen" ook zittingsverslagen matcht.
+    NOTULEN_ALIASSEN = {"notulen", "zittingsverslag", "zittingsnotulen", "verslag"}
+
     def verwerk_doc(doc: dict, bestemming: Path) -> bool:
         doc_id = doc["url"].split("/")[-1]
         if doc_id in verwerkt_ids:
             return False
-        if document_filter and document_filter.lower() not in doc["naam"].lower():
-            return False
+        if document_filter:
+            filter_lower = document_filter.lower()
+            naam_lower = doc["naam"].lower()
+            aliassen = NOTULEN_ALIASSEN if filter_lower == "notulen" else {filter_lower}
+            if not any(alias in naam_lower for alias in aliassen):
+                return False
         verwerkt_ids.add(doc_id)
         naam_hint = sanitize_filename(doc["naam"])
         succes = download_document(doc["url"], bestemming, naam_hint)
@@ -164,18 +169,16 @@ def verwerk_vergadering(meeting: dict, output_pad: Path,
     # Documenten van de vergaderingspagina (agenda, besluitenlijst, notulen, ...)
     doc_links = haal_document_links_van_pagina(verg_url)
     for doc in doc_links:
-        if verwerk_doc(doc, verg_map):
+        if verwerk_doc(doc, output_pad):
             downloads += 1
 
     # Optioneel: individuele agendapunten
     if ook_agendapunten:
         ap_urls = haal_agendapunt_urls(verg_url)
         if ap_urls:
-            ap_map = verg_map / "besluiten_per_punt"
-            ap_map.mkdir(exist_ok=True)
             for ap_url in tqdm(ap_urls, desc="      Agendapunten", leave=False):
                 for doc in haal_document_links_van_pagina(ap_url):
-                    if verwerk_doc(doc, ap_map):
+                    if verwerk_doc(doc, output_pad):
                         downloads += 1
 
     if downloads == 0:

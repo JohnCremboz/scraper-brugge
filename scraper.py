@@ -160,9 +160,6 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
 
 
     verg_id = vergadering_url.rstrip("/").split("/")[-1]
-    map_naam = sanitize_filename(f"{titel}_{verg_id}")
-    verg_map = output_pad / map_naam
-    verg_map.mkdir(parents=True, exist_ok=True)
 
     print(f"\n    [{titel}] {verg_id}")
 
@@ -191,18 +188,16 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
         doc_links += haal_document_links_van_pagina(subpad)
 
     for doc in doc_links:
-        if verwerk_doc(doc, verg_map):
+        if verwerk_doc(doc, output_pad):
             downloads += 1
 
     # 3. Optioneel: agendapunten
     if ook_agendapunten:
         agendapunt_urls = haal_agenda_punten(vergadering_url)
         if agendapunt_urls:
-            ap_map = verg_map / "besluiten_per_punt"
-            ap_map.mkdir(exist_ok=True)
             for ap_url in tqdm(agendapunt_urls, desc="      Agendapunten", leave=False):
                 for doc in haal_document_links_van_pagina(ap_url):
-                    if verwerk_doc(doc, ap_map):
+                    if verwerk_doc(doc, output_pad):
                         downloads += 1
 
     if downloads == 0:

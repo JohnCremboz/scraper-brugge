@@ -177,24 +177,50 @@ def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
         return False, ""
 
 
+# Synoniemen die gemeenten gebruiken voor officiële vergaderingsverslagen/notulen.
+# Meerdere termen omdat er geen standaard bestaat over de portalen heen.
+NOTULEN_SYNONIEMEN: list[str] = [
+    "notulen",
+    "verslag",
+    "zittingsverslag",
+    "besluitenlijst",
+    "ontwerpbesluitenbundel",
+    "dagorde",
+]
+
+
+def document_filter_match(doc_naam: str, document_filter: list[str] | str | None) -> bool:
+    """
+    Controleer of een documentnaam voldoet aan het filter.
+    document_filter kan zijn:
+      - None: altijd True (geen filter)
+      - str: één term (achterwaartse compatibiliteit)
+      - list[str]: één of meer termen, elk wordt als deelstring gecheckt (OR-logica)
+    """
+    if not document_filter:
+        return True
+    naam_lower = doc_naam.lower()
+    if isinstance(document_filter, str):
+        return document_filter.lower() in naam_lower
+    return any(term.lower() in naam_lower for term in document_filter)
+
+
 def verwerk_vergadering(vergadering_url: str, output_pad: Path,
                         ook_agendapunten: bool = False,
                         orgaan_filter: str | None = None,
-                        document_filter: str | None = None) -> int:
+                        document_filter: list[str] | str | None = None) -> int:
     """
     Verwerk een vergadering: download alle bijhorende PDFs.
     Geeft het aantal nieuw gedownloade PDFs terug.
-    Als document_filter opgegeven is (bv. 'notulen'), worden alleen
-    documenten waarvan de naam die string bevat gedownload.
+    Als document_filter opgegeven is, worden alleen documenten waarvan de naam
+    één van de opgegeven termen bevat gedownload (OR-logica).
+    Geef een lijst door voor meerdere termen (bv. NOTULEN_SYNONIEMEN).
     """
     heeft_inhoud, titel = vergadering_heeft_inhoud(vergadering_url)
     if not heeft_inhoud:
         return 0
 
     verg_id = vergadering_url.rstrip("/").split("/")[-1]
-    map_naam = sanitize_filename(f"{titel}_{verg_id}")
-    verg_map = output_pad / map_naam
-    verg_map.mkdir(parents=True, exist_ok=True)
 
     print(f"\n    [{titel}] {verg_id}")
 
@@ -205,8 +231,8 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
         doc_id = doc["url"].split("/")[-1]
         if doc_id in verwerkt_ids:
             return False
-        # Documentnaam-filter
-        if document_filter and document_filter.lower() not in doc["naam"].lower():
+        # Documentnaam-filter (ondersteunt enkelvoudige string en lijst van termen)
+        if not document_filter_match(doc["naam"], document_filter):
             return False
         verwerkt_ids.add(doc_id)
         naam_hint = sanitize_filename(doc["naam"])
@@ -227,18 +253,16 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
         doc_links += haal_document_links_van_pagina(subpagina_url)
 
     for doc in doc_links:
-        if verwerk_doc(doc, verg_map):
+        if verwerk_doc(doc, output_pad):
             downloads += 1
 
     # 4. Optioneel: agendapunten
     if ook_agendapunten:
         agendapunt_urls = haal_agenda_punten(vergadering_url)
         if agendapunt_urls:
-            ap_map = verg_map / "besluiten_per_punt"
-            ap_map.mkdir(exist_ok=True)
             for ap_url in tqdm(agendapunt_urls, desc="      Agendapunten", leave=False):
                 for doc in haal_document_links_van_pagina(ap_url):
-                    if verwerk_doc(doc, ap_map):
+                    if verwerk_doc(doc, output_pad):
                         downloads += 1
 
     if downloads == 0:
@@ -357,7 +381,7 @@ def toon_organen():
 
 def scrape(orgaan: str | None, output_map: str, maanden: int,
            ook_agendapunten: bool = False, headless: bool = True,
-           document_filter: str | None = None):
+           document_filter: list[str] | str | None = None):
     """Hoofdfunctie voor het scrapen."""
     output_pad = Path(output_map)
     output_pad.mkdir(parents=True, exist_ok=True)
@@ -367,7 +391,11 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
     print(f"  Orgaan:  {orgaan or 'Alle organen'}")
     print(f"  Maanden: {maanden}")
     print(f"  Incl. agendapunten: {'Ja' if ook_agendapunten else 'Nee (gebruik --agendapunten)'}")
-    print(f"  Documentfilter: {document_filter or 'Geen (alle documenten)'}")
+    if isinstance(document_filter, list):
+        filter_weergave = ", ".join(document_filter)
+    else:
+        filter_weergave = document_filter or "Geen (alle documenten)"
+    print(f"  Documentfilter: {filter_weergave}")
     print(f"  Output:  {output_pad.resolve()}")
     print(f"{'='*60}\n")
 
@@ -473,9 +501,11 @@ Voorbeelden:
     parser.add_argument("--agendapunten", "-a", action="store_true",
         help="Ook individuele agendapunt-besluiten meenemen (trager)")
     parser.add_argument("--document-filter", "-f", type=str, default=None,
-        help="Filter documenten op naam (bv. 'notulen'). Alleen docs die deze tekst bevatten worden gedownload.")
+        help="Filter documenten op naam. Meerdere termen scheiden met komma (bv. 'notulen,verslag'). "
+             "Alleen docs die één van de termen bevatten worden gedownload.")
     parser.add_argument("--notulen", action="store_true",
-        help="Shorthand voor --document-filter notulen")
+        help="Download alleen verslagdocumenten: notulen, verslag, zittingsverslag, besluitenlijst, "
+             "ontwerpbesluitenbundel, dagorde (ongeacht de exacte term die het portaal gebruikt)")
     parser.add_argument("--lijst-organen", action="store_true",
         help="Toon beschikbare organen en stop")
     parser.add_argument("--zichtbaar", action="store_true",
@@ -489,8 +519,13 @@ Voorbeelden:
         KALENDER_URL = f"{BASE_URL}/zittingen/kalender"
         init_session()
 
-    if args.notulen and not args.document_filter:
-        args.document_filter = "notulen"
+    # Zet document_filter om naar lijst van termen (kommagescheiden invoer
+    # of de volledige synoniemenlijst bij --notulen)
+    resolved_filter: list[str] | None = None
+    if args.document_filter:
+        resolved_filter = [t.strip() for t in args.document_filter.split(",") if t.strip()]
+    elif args.notulen:
+        resolved_filter = NOTULEN_SYNONIEMEN
 
     if args.lijst_organen:
         toon_organen()
@@ -508,7 +543,7 @@ Voorbeelden:
         maanden=args.maanden,
         ook_agendapunten=args.agendapunten,
         headless=not args.zichtbaar,
-        document_filter=args.document_filter,
+        document_filter=resolved_filter,
     )
 
 

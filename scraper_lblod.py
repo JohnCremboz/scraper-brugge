@@ -43,8 +43,43 @@ from base_scraper import (
 BASE_URL = "https://lblod.gistel.be"
 OVERZICHT_PAD = "/LBLODWeb/Home/Overzicht"
 
+# Synoniemen die gemeenten gebruiken voor officiële vergaderingsverslagen.
+# Op LBLOD zijn "Besluitenlijst" en "Uittreksel" de meest voorkomende termen naast "Notulen".
+NOTULEN_SYNONIEMEN: list[str] = [
+    "notulen",
+    "verslag",
+    "zittingsverslag",
+    "besluitenlijst",
+    "uittreksel",
+    "dagorde",
+]
+
 SESSION: requests.Session | None = None
 _config: ScraperConfig | None = None
+
+
+def document_filter_match(doc_naam: str, doc_filename: str, doc_type: str,
+                          document_filter: list[str] | str | None) -> bool:
+    """
+    Controleer of een document voldoet aan het filter.
+    document_filter kan zijn:
+      - None: altijd True (geen filter)
+      - str: één term (achterwaartse compatibiliteit)
+      - list[str]: één of meer termen, OR-logica
+    """
+    if not document_filter:
+        return True
+    naam_lower = doc_naam.lower()
+    file_lower = doc_filename.lower()
+    type_lower = doc_type.lower()
+    if isinstance(document_filter, str):
+        termen = [document_filter.lower()]
+    else:
+        termen = [t.lower() for t in document_filter]
+    return any(
+        t in naam_lower or t in file_lower or t in type_lower
+        for t in termen
+    )
 
 
 def init_session(base_url: str | None = None) -> None:
@@ -231,6 +266,10 @@ def haal_documenten(orgaan_pad: str, jaar: int | None = None) -> list[dict]:
             doc_type = "besluitenlijst"
         elif "uittreksel" in naam_lower or "uittreksel" in filename_lower:
             doc_type = "uittreksel"
+        elif "verslag" in naam_lower or "verslag" in filename_lower:
+            doc_type = "verslag"
+        elif "dagorde" in naam_lower or "dagorde" in filename_lower:
+            doc_type = "dagorde"
 
         # Probeer datum uit bestandsnaam als we geen heading-datum hebben
         doc_datum = huidige_datum
@@ -321,7 +360,7 @@ def scrape(
     orgaan_naam: str | None,
     output_map: str,
     maanden: int,
-    document_filter: str | None = None,
+    document_filter: list[str] | str | None = None,
     alle: bool = False,
 ):
     """Hoofdfunctie voor het scrapen."""
@@ -334,7 +373,11 @@ def scrape(
     print(f"  Scraper: {BASE_URL} (LBLOD)")
     print(f"  Orgaan:  {orgaan_naam or 'Alle organen'}")
     print(f"  Maanden: {maanden}")
-    print(f"  Documentfilter: {document_filter or 'Geen (alle documenten)'}")
+    if isinstance(document_filter, list):
+        filter_weergave = ", ".join(document_filter)
+    else:
+        filter_weergave = document_filter or "Geen (alle documenten)"
+    print(f"  Documentfilter: {filter_weergave}")
     print(f"  Output:  {output_pad.resolve()}")
     print(f"{'='*60}\n")
 
@@ -385,10 +428,6 @@ def scrape(
             continue
         print(f"    Jaren: {', '.join(str(j) for j in jaren)}")
 
-        orgaan_slug = sanitize_filename(orgaan["naam"])
-        orgaan_map = output_pad / orgaan_slug
-        orgaan_map.mkdir(parents=True, exist_ok=True)
-
         orgaan_downloads = 0
 
         for jaar in jaren:
@@ -402,12 +441,9 @@ def scrape(
 
             # Filter op documenttype
             if document_filter:
-                filter_lower = document_filter.lower()
                 docs = [
                     d for d in docs
-                    if filter_lower in d["naam"].lower()
-                    or filter_lower in d["filename"].lower()
-                    or filter_lower in d["type"]
+                    if document_filter_match(d["naam"], d["filename"], d["type"], document_filter)
                 ]
 
             if not docs:
@@ -420,7 +456,7 @@ def scrape(
                 hint = doc["filename"] or sanitize_filename(doc["naam"]) + ".pdf"
                 print(f"      ({idx}/{len(docs)}) downloaden...", end="", flush=True)
 
-                if download_document(doc["url"], orgaan_map, hint):
+                if download_document(doc["url"], output_pad, hint):
                     orgaan_downloads += 1
                     print(f" [OK] {hint[:60]}")
                 else:
@@ -465,9 +501,13 @@ Voorbeelden:
     parser.add_argument("--maanden", "-m", type=int, default=12,
                         help="Aantal maanden terug (standaard: 12)")
     parser.add_argument("--document-filter", "-f", type=str, default=None,
-                        help="Filter documenten op naam (bv. notulen)")
+                        help="Filter documenten op naam. Meerdere termen scheiden met komma "
+                             "(bv. 'notulen,uittreksel'). Alleen docs die één van de termen "
+                             "bevatten worden gedownload.")
     parser.add_argument("--notulen", action="store_true",
-                        help="Shorthand voor --document-filter notulen")
+                        help="Download alleen verslagdocumenten: notulen, verslag, "
+                             "besluitenlijst, uittreksel, dagorde "
+                             "(ongeacht de exacte term die het portaal gebruikt)")
     parser.add_argument("--lijst-organen", action="store_true",
                         help="Toon beschikbare organen en stop")
     # Compatibiliteit met scraper_groep.py
@@ -478,8 +518,12 @@ Voorbeelden:
 
     args = parser.parse_args()
 
-    if args.notulen and not args.document_filter:
-        args.document_filter = "notulen"
+    # Zet document_filter om naar lijst van termen
+    resolved_filter: list[str] | None = None
+    if args.document_filter:
+        resolved_filter = [t.strip() for t in args.document_filter.split(",") if t.strip()]
+    elif args.notulen:
+        resolved_filter = NOTULEN_SYNONIEMEN
 
     init_session(args.base_url)
 
@@ -506,7 +550,7 @@ Voorbeelden:
         orgaan_naam=args.orgaan,
         output_map=args.output,
         maanden=args.maanden,
-        document_filter=args.document_filter,
+        document_filter=resolved_filter,
         alle=args.alle,
     )
 

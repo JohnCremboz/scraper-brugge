@@ -277,9 +277,6 @@ def verwerk_vergadering(
             titel = full_url.rstrip("/").split("/")[-1]
 
     verg_id = full_url.rstrip("/").split("/")[-1]
-    map_naam = sanitize_filename(f"{titel}_{verg_id}")
-    verg_map = output_pad / map_naam
-    verg_map.mkdir(parents=True, exist_ok=True)
 
     print(f"\n    [{titel}]")
 
@@ -313,7 +310,7 @@ def verwerk_vergadering(
     # Vergaderingspagina zelf + subpagina's
     for subpad in [full_url, f"{full_url}/agenda", f"{full_url}/besluitenlijst", f"{full_url}/notulen"]:
         for doc in haal_file_links_van_pagina(subpad):
-            if verwerk_doc(doc, verg_map):
+            if verwerk_doc(doc, output_pad):
                 downloads += 1
 
     if downloads == 0:

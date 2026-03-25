@@ -327,16 +327,11 @@ def scrape_gemeente(
     for map_item in mappen:
         map_naam = map_item["naam"]
         logger.info("  📁 %s", map_naam)
-        map_dir = gem_dir / sanitize_filename(map_naam)
-
         for item in haal_datum_items(map_item["key"], grensdatum):
             datum_str = item["datum"].isoformat()
             publicaties = haal_publicaties(item["key"])
             if not publicaties:
                 continue
-
-            item_dir = map_dir / datum_str
-            item_dir.mkdir(parents=True, exist_ok=True)
 
             for pub in publicaties:
                 # Sla over als documenttitel niet overeenkomt met doc_filter
@@ -348,7 +343,7 @@ def scrape_gemeente(
                 result = download_document(
                     SESSION, _config,
                     pub["url"],
-                    item_dir,
+                    gem_dir,
                     filename_hint=hint,
                     require_pdf=False,
                 )
