@@ -1,6 +1,6 @@
 # TODO — Besluitendatabank Scraper
 
-## Huidige status (23 maart 2026)
+## Huidige status (26 maart 2026)
 
 **Dekking:** 574/575 rijen in simba-source.csv hebben een werkende scraper (**99.8%**)
 **CSV:** 575 rijen = 10 provincies + 565 gemeenten (compleet, matcht Wikipedia)
@@ -157,38 +157,22 @@ werkende website).
 
 ---
 
-## Health check — URL-bereikbaarheid (23 maart 2026)
+## Health check — URL-bereikbaarheid (26 maart 2026)
 
-Resultaat van `uv run python health_check.py --url-check`: **17 echte problemen** (was 269 vóór fix van valse positieven — zie hieronder).
+Resultaat van `uv run python health_check.py`: **1 probleem** (574/575 OK).
 
 **Valse positieven gecorrigeerd in `health_check.py`:**
 - **Deliberations.be (167×)**: HEAD-request → 404, maar GET → 200 (Plone/Zope-gedrag) → fallback op GET tevens bij 404
 - **LBLOD (62×)**: 403 bij directe requests; scraper werkt met eigen sessie/headers → 403 telt niet als fout voor `_TYPE_VERWACHT_403`
 - **Icordis/Drupal (~27×)**: CSV-URL is pad-template (`/file/download`, `/sites/default/files`) → alleen `scheme://host` wordt gecheckt via `_check_url_voor_type()`
 
-**Resterende 17 echte problemen:**
+**Resterende 1 probleem:**
 
 | Gemeente | Type | HTTP | Oorzaak |
-|----------|------|------|---------|
-| Herstappe | overig | DNS mislukt | Geen werkende website (bekende gap) |
-| ~~Nazareth-De Pinte~~ | ~~cipalschaubroeck~~ | ~~DNS mislukt~~ | **Opgelost**: fusiegemeente (2025) gebruikt nieuw platform `nazareth-depinte-raadpleegomgeving.csecho.be`; CSV bijgewerkt |
-| ~~Rumes~~ | ~~wordpress~~ | ~~verbinding geweigerd~~ | ~~Site offline~~ → **opgelost**: nieuw domein `rumes-online.be` (scraper bijgewerkt) |
-| Sankt Vith | wordpress | 404 | WordPress-pagina verplaatst? |
-| Linkebeek | linkebeek | 404 | Linkebeek-scraper-URL stuk |
-| Sint-Genesius-Rode | linkebeek | 404 | Linkebeek-scraper-URL stuk |
-| Manage | deliberations | 401 | Deliberations.be vraagt authenticatie voor dit pad |
-| Koekelberg | docodis | 403 | Docodis-site geblokkeerd bij directe requests |
-| Amel | wordpress | 403 | Bot-bescherming (scraper wellicht nog OK) |
-| Bernissart | wordpress | 403 | Bot-bescherming |
-| ~~Burg-Reuland~~ | ~~wordpress~~ | ~~403~~ | ~~Bot-bescherming~~ → **opgelost**: listing-URLs hernoemd naar `-des-gr/`; scraper bijgewerkt + DDMMYYYY-datumpatroon toegevoegd |
-| Bütgenbach | wordpress | 403 | Bot-bescherming |
-| Floreffe | wordpress | 403 | Bot-bescherming |
-| Kelmis | wordpress | 403 | Bot-bescherming |
-| Lontzen | wordpress | 403 | Bot-bescherming |
-| Raeren | wordpress | 403 | Bot-bescherming |
-| Woluwe-Saint-Pierre | wordpress | 403 | Bot-bescherming |
+|----------|------|------|---------||
+| Herstappe | overig | DNS mislukt | Geen werkende website (bekende gap, ~85 inwoners) |
 
-> **Opmerking WordPress 403**: de meeste WordPress-sites blokkeren directe HEAD/GET-requests maar de scraper zelf (met correcte `User-Agent` en sessie) werkt gewoonlijk wél. Testen met `uv run python scraper_wordpress.py --gemeente ...` om te bevestigen.
+> **Opmerking WordPress 403**: de meeste WordPress-sites blokkeren directe HEAD/GET-requests maar de scraper zelf (met correcte `User-Agent` en sessie) werkt gewoonlijk wél — bevestigd op 26 maart 2026.
 
 ---
 
@@ -227,26 +211,26 @@ Resultaat van `uv run python health_check.py --url-check`: **17 echte problemen*
 ```
 scraper-brugge/
 ├── base_scraper.py              # Gedeelde logica: sessie, download, sanitize, robust_get
+├── html_output.py               # Gedeelde HTML-uitvoer (tabel + kaarten layout)
 ├── start.py                     # Interactieve TUI (wizard)
 ├── scraper_groep.py             # Batch-scraper per type + type-detectie (URL → scraper)
 ├── scraper.py                   # Brugge (Playwright, dedicated)
-├── scraper_onlinesmartcities.py # SmartCities/Besluitvorming (72 gem. + Leuven, Playwright)
+├── scraper_onlinesmartcities.py # SmartCities/Besluitvorming (70 gem. + Leuven, Playwright)
 ├── scraper_menen.py             # CipalSchaubroeck/CSEcho (79 gem., REST)
 ├── scraper_ranst.py             # MeetingBurger (46 gem., REST)
-├── scraper_lblod.py             # LBLOD (63 gem., HTML)
-├── scraper_deliberations.py     # Deliberations.be/IMIO (203 gem., HTML)
+├── scraper_lblod.py             # LBLOD (62 gem., HTML)
+├── scraper_deliberations.py     # Deliberations.be/IMIO (167 gem., HTML)
 ├── scraper_ibabs.py             # iBabs (2 gem., HTML)
 ├── scraper_irisnet.py           # Irisnet/publi.irisnet.be (10 Brusselse gem.)
 ├── scraper_brussel.py           # Stad Brussel (bruxelles.be)
-├── scraper_forest.py            # Forest/Vorst (forest.brussels)
 ├── scraper_molenbeek.py         # Molenbeek-Saint-Jean (molenbeek.irisnet.be)
 ├── scraper_schaerbeek.py        # Schaerbeek (1030.be, via sitemap)
 ├── scraper_ixelles.py           # Ixelles/Elsene
 ├── scraper_icordis.py           # Icordis CMS/LCP — 12 gem. (*/file/download)
 ├── scraper_linkebeek.py         # LCP agenda-notulen — 2 gem. (Linkebeek, SGR)
 ├── scraper_docodis.py           # Docodis CMS — 1 gem. (Koekelberg)
-├── scraper_imio.py              # iMio/Plone directe PDFs — 31 gem. (structuren A/B/C)
-├── scraper_drupal.py            # Drupal/TYPO3 direct PDF — 15 gem. incl. Prov. Luik
+├── scraper_imio.py              # iMio/Plone directe PDFs — 29 gem. (structuren A/B/C)
+├── scraper_drupal.py            # Drupal/TYPO3 direct PDF — 15 gem. incl. Prov. Luik + Forest
 ├── scraper_wordpress.py         # WordPress/TYPO3/Plone — 36 gem. incl. Prov. Namen
 ├── scraper_idelibe.py           # iDélibé/conseilcommunal.be — 31 Waalse gem. (REST API)
 ├── scraper_pubcon.py            # Pubcon/Tobibus LBLOD — 1 gem. (Oudsbergen)
@@ -254,7 +238,7 @@ scraper-brugge/
 ├── scraper_vlaamsbrabant.py     # Prov. Vlaams-Brabant
 ├── scraper_waalse_provincies.py # Prov. Henegouwen + Luxemburg + Waals-Brabant
 ├── compare_wiki.py              # Vergelijking CSV vs Wikipedia (565 gem.)
-├── investigate.py               # Hulpscript voor onderzoek nieuwe gemeenten
+├── health_check.py              # URL-bereikbaarheid controleren voor alle 575 bronnen
 ├── simba-source.csv             # Bronlijst: 575 rijen (10 provincies + 565 gemeenten)
 └── pyproject.toml               # Dependencies (Python 3.12+, uv)
 ```
@@ -263,7 +247,7 @@ scraper-brugge/
 
 - **Package manager**: uv — `uv run python scraper_wordpress.py --gemeente burdinne`
 - **Encoding**: `$env:PYTHONIOENCODING = "utf-8"` nodig op Windows bij sommige terminals
-- **Playwright**: alleen nodig voor SmartCities-type (72 gem. + Leuven) + Brugge + Büllingen + Orp-Jauche
+- **Playwright**: alleen nodig voor SmartCities-type (70 gem. + Leuven) + Brugge + Büllingen + Orp-Jauche — na `uv` update: voer `uv run playwright install` uit als `chrome-headless-shell.exe` ontbreekt
 - **Type-detectie**: `scraper_groep.py detecteer_type()` bepaalt de scraper op basis van de URL in de CSV
 - **Datumextractie**: `datum_uit_pad()` in scraper_wordpress.py kent 8 patronen (YYYYMMDD, YYYY-MM-DD, YYYY.MM.DD, DD.MM.YYYY, YY.MM.DD, DD-MM-YY, Frans maandnaam, DDMMYYYY)
 - **Plone-gemeenten**: links eindigen op `.pdf/view` → `plone_folder_listing: True` strip de `/view`-suffix
