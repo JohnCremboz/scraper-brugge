@@ -17,6 +17,11 @@ build/
 
 # Output data
 pdfs/
+pdfs_smartcities/
+health_output*.txt
+imio_output.txt
+imio_onderzoek.csv
+mb_resultaat.txt
 
 # OS
 .DS_Store
