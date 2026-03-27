@@ -271,26 +271,88 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
     return downloads
 
 
+def haal_organen_via_playwright() -> list[dict]:
+    """
+    Haal de organen op via een headless browser (Playwright).
+    Fallback wanneer de statische HTML geen <select id='organs'> bevat.
+
+    Twee strategieën (in volgorde):
+    1. Onderschep de fetchcalendar JSON-API en extraheer unieke organ-namen.
+    2. Lees <select#organs> uit de gerenderde DOM (oudere portaalversie).
+    """
+    try:
+        calendar_meetings: list[dict] = []
+
+        def _on_response(response):
+            if "fetchcalendar" in response.url:
+                try:
+                    data = response.json()
+                    calendar_meetings.extend(data.get("meetings", []))
+                except Exception:
+                    pass
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                ctx = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
+                )
+                page = ctx.new_page()
+                page.on("response", _on_response)
+                page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
+                time.sleep(1)
+
+                # Strategie 1: organen extraheren uit fetchcalendar API
+                if calendar_meetings:
+                    seen: dict[str, str] = {}
+                    for m in calendar_meetings:
+                        organ = m.get("organ") or {}
+                        naam = organ.get("name", "").strip()
+                        uuid = organ.get("id", "").strip()
+                        if naam and uuid and uuid not in seen:
+                            seen[uuid] = naam
+                    if seen:
+                        return [{"naam": naam, "uuid": uid} for uid, naam in seen.items()]
+
+                # Strategie 2: <select#organs> in de gerenderde DOM
+                options = page.locator("select#organs option")
+                count = options.count()
+                organen = []
+                for i in range(count):
+                    opt = options.nth(i)
+                    naam = opt.inner_text().strip()
+                    uuid = opt.get_attribute("value") or ""
+                    if uuid:
+                        organen.append({"naam": naam, "uuid": uuid})
+                return organen
+            finally:
+                browser.close()
+    except Exception as e:
+        print(f"  [!] Playwright organen ophalen mislukt: {e}")
+        return []
+
+
 def haal_organen_statisch() -> list[dict]:
     """
     Haal de organen op uit de statische HTML van de kalender.
     Gebruikt <select id='organs' multiple> met <option value='UUID'>.
+    Valt terug op Playwright als het select-element niet in de statische HTML zit.
     Geeft lijst van {naam, uuid} terug.
     """
     try:
         resp = SESSION.get(KALENDER_URL, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
         select = soup.find("select", id="organs")
-        if not select:
-            return []
-        return [
-            {"naam": opt.get_text(strip=True), "uuid": opt.get("value", "")}
-            for opt in select.find_all("option")
-            if opt.get("value")
-        ]
+        if select:
+            return [
+                {"naam": opt.get_text(strip=True), "uuid": opt.get("value", "")}
+                for opt in select.find_all("option")
+                if opt.get("value")
+            ]
     except Exception as e:
-        print(f"  [!] Fout laden organen: {e}")
-        return []
+        print(f"  [!] Fout laden organen (statisch): {e}")
+    # Statische HTML bevat het select-element niet → pagina laadt organen via JS
+    return haal_organen_via_playwright()
 
 
 def zoek_orgaan_uuid(orgaan_naam: str) -> tuple[str | None, str | None]:
