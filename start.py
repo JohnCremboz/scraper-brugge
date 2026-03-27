@@ -152,14 +152,21 @@ def haal_organen_direct(gemeente: dict) -> list[str] | None:
                 if hasattr(mod, "ZOEKEN_URL"):
                     mod.ZOEKEN_URL = f"{base_url}{context}/zoeken"
 
+        if hasattr(mod, "init_session"):
+            try:
+                mod.init_session(base_url)
+            except TypeError:
+                try:
+                    mod.init_session()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
         if hasattr(mod, "haal_organen_statisch"):
-            if hasattr(mod, "init_session"):
-                mod.init_session()
             organen = mod.haal_organen_statisch()
             return [o["naam"] for o in organen] if organen else None
         elif hasattr(mod, "haal_organen"):
-            if hasattr(mod, "init_session"):
-                mod.init_session()
             organen = mod.haal_organen()
             return [o["naam"] for o in organen] if organen else None
     except Exception:

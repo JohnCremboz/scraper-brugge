@@ -649,7 +649,14 @@ def _pdfs_van_html(
 # ---------------------------------------------------------------------------
 
 def haal_organen_statisch() -> list[dict]:
-    return [{"naam": "Gemeinderat", "uuid": "gemeinderat"}]
+    """Geef de gemeente-naam terug op basis van BASE_URL, of alle gemeenten als fallback."""
+    from urllib.parse import urlparse as _urlparse
+    netloc = _urlparse(BASE_URL).netloc
+    conf = _zoek_gemeente(netloc)
+    if conf:
+        return [{"naam": conf["naam"], "uuid": netloc}]
+    # BASE_URL is niet ingesteld: geef alle bekende gemeenten terug
+    return [{"naam": c["naam"], "uuid": n} for n, c in GEMEENTEN.items()]
 
 
 def _zoek_gemeente(netloc: str) -> dict | None:
