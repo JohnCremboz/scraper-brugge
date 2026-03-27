@@ -226,6 +226,11 @@ def init_session(base_url: str) -> None:
     SESSION = create_session(_config)
 
 
+def haal_organen_statisch() -> list[dict]:
+    """iMio-sites hebben geen orgaanindeling — geeft altijd lege lijst terug."""
+    return []
+
+
 def _get(url: str):
     full = url if url.startswith("http") else f"{BASE_URL}{url}"
     return rate_limited_get(SESSION, full, _config)

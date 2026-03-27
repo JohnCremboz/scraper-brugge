@@ -152,6 +152,14 @@ def haal_organen_direct(gemeente: dict) -> list[str] | None:
                 if hasattr(mod, "ZOEKEN_URL"):
                     mod.ZOEKEN_URL = f"{base_url}{context}/zoeken"
 
+        # Voor irisnet: extraheer org_key uit de volledige gemeente-URL
+        import re as _re
+        if hasattr(mod, "ORG_KEY"):
+            volledige_url = gemeente.get("url", "")
+            m_key = _re.search(r"vipKey=([A-Za-z0-9_\-]+)", volledige_url)
+            if m_key:
+                mod.ORG_KEY = m_key.group(1)
+
         if hasattr(mod, "init_session"):
             try:
                 mod.init_session(base_url)
@@ -165,10 +173,14 @@ def haal_organen_direct(gemeente: dict) -> list[str] | None:
 
         if hasattr(mod, "haal_organen_statisch"):
             organen = mod.haal_organen_statisch()
-            return [o["naam"] for o in organen] if organen else None
+            if organen is None:
+                return None
+            return [o["naam"] for o in organen]  # mag [] zijn (geen organen)
         elif hasattr(mod, "haal_organen"):
             organen = mod.haal_organen()
-            return [o["naam"] for o in organen] if organen else None
+            if organen is None:
+                return None
+            return [o["naam"] for o in organen]
     except Exception:
         pass
     return None
@@ -328,6 +340,10 @@ def stap_orgaan(gemeente: dict) -> str | None:
         if keuze in (None, "__alle__"):
             return None
         return keuze
+    elif organen is not None:
+        # Lege lijst: scraper heeft geen orgaanindeling (bv. deliberations.be)
+        console.print("[dim]  Geen orgaanindeling — alle documenten worden opgehaald.[/dim]")
+        return None
     else:
         console.print("[yellow]  Organen konden niet automatisch worden opgehaald.[/yellow]")
         antwoord = questionary.text(
@@ -485,6 +501,9 @@ def menu_organen(alle_gemeenten: list[dict]):
             for o in organen:
                 tabel.add_row(o)
             console.print(tabel)
+        elif organen is not None:  # lege lijst: geen organen by design
+            console.print(f"[dim]{gemeente['gemeente']} heeft geen orgaanindeling — "
+                          "alle documenten worden als één geheel gepubliceerd.[/dim]")
         else:
             console.print(f"[yellow]Kon geen organen ophalen voor {gemeente['gemeente']}.[/yellow]")
             console.print("[dim]Playwright-gebaseerde scrapers vereisen een browser. "

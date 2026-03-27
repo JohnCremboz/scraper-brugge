@@ -41,6 +41,7 @@ CSV_PATH = Path(__file__).parent / "simba-source.csv"
 
 SESSION = None
 _config: ScraperConfig | None = None
+ORG_KEY: str | None = None  # org_key voor de huidige gemeente (gezet via GEMEENTE_URL)
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,20 @@ def init_session(base_url: str = BASE_URL) -> None:
         timeout=60,
     )
     SESSION = create_session(_config)
+
+
+def haal_organen_statisch() -> list[dict]:
+    """Haal mappen (= organen) op voor de huidige gemeente via ORG_KEY.
+
+    ORG_KEY wordt gezet door start.py via de volledige gemeente-URL
+    (die de vipKey as query-parameter bevat).
+    """
+    if not ORG_KEY:
+        return []
+    if SESSION is None:
+        init_session()
+    mappen = haal_mappen(ORG_KEY)
+    return [{"naam": m["naam"], "uuid": m["key"]} for m in mappen]
 
 
 # ---------------------------------------------------------------------------
