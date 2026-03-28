@@ -682,7 +682,13 @@ def tui_main(gemeenten: list[dict]) -> None:
 
     # ── Kies websitetype ──────────────────────────────────────────────────
     scraapbare_types = [t for t, c in TYPES.items() if c["scraper"] is not None]
+    totaal_scraapbaar = sum(len(groepen[t]) for t in scraapbare_types)
     keuzes_type = [
+        questionary.Choice(
+            title=f"★  Alle types — {totaal_scraapbaar} gemeente(n)",
+            value="__alle_types__",
+        )
+    ] + [
         questionary.Choice(
             title=f"{TYPES[t]['label']}  ({len(groepen[t])} gemeente(n))  — {TYPES[t]['beschrijving']}",
             value=t,
@@ -698,32 +704,42 @@ def tui_main(gemeenten: list[dict]) -> None:
     if not gekozen_type:
         return
 
-    leden = groepen[gekozen_type]
-    config = TYPES[gekozen_type]
-
     # ── Kies gemeenten ────────────────────────────────────────────────────
-    keuze_selectie = questionary.select(
-        f"Welke {config['label']}-gemeenten verwerken?",
-        choices=[
-            questionary.Choice(f"Alle {len(leden)} gemeenten", "alle"),
-            questionary.Choice("Kies een selectie", "kies"),
-        ],
-        style=STIJL,
-    ).ask()
-    if not keuze_selectie:
-        return
+    if gekozen_type == "__alle_types__":
+        te_verwerken = [g for t in scraapbare_types for g in groepen[t]]
+        heeft_agendapunten_optie = any(TYPES[t]["heeft_agendapunten"] for t in scraapbare_types)
+        heeft_browser_optie = any(TYPES[t]["heeft_browser"] for t in scraapbare_types)
+        type_label = f"Alle types ({len(te_verwerken)} gemeenten)"
+    else:
+        leden = groepen[gekozen_type]
+        config = TYPES[gekozen_type]
 
-    if keuze_selectie == "kies":
-        gekozen_namen = questionary.checkbox(
-            "Selecteer gemeenten:",
-            choices=[g["gemeente"] for g in leden],
+        keuze_selectie = questionary.select(
+            f"Welke {config['label']}-gemeenten verwerken?",
+            choices=[
+                questionary.Choice(f"Alle {len(leden)} gemeenten", "alle"),
+                questionary.Choice("Kies een selectie", "kies"),
+            ],
             style=STIJL,
         ).ask()
-        if not gekozen_namen:
+        if not keuze_selectie:
             return
-        te_verwerken = [g for g in leden if g["gemeente"] in gekozen_namen]
-    else:
-        te_verwerken = leden
+
+        if keuze_selectie == "kies":
+            gekozen_namen = questionary.checkbox(
+                "Selecteer gemeenten:",
+                choices=[g["gemeente"] for g in leden],
+                style=STIJL,
+            ).ask()
+            if not gekozen_namen:
+                return
+            te_verwerken = [g for g in leden if g["gemeente"] in gekozen_namen]
+        else:
+            te_verwerken = leden
+
+        heeft_agendapunten_optie = config["heeft_agendapunten"]
+        heeft_browser_optie = config["heeft_browser"]
+        type_label = config["label"]
 
     # ── Orgaan ───────────────────────────────────────────────────────────
     orgaan_keuze = questionary.select(
@@ -782,7 +798,7 @@ def tui_main(gemeenten: list[dict]) -> None:
 
     # ── Agendapunten ──────────────────────────────────────────────────────
     agendapunten = False
-    if config["heeft_agendapunten"]:
+    if heeft_agendapunten_optie:
         agendapunten = questionary.confirm(
             "Individuele agendapunt-besluiten meenemen? (trager)",
             default=False,
@@ -791,7 +807,7 @@ def tui_main(gemeenten: list[dict]) -> None:
 
     # ── Browser tonen ─────────────────────────────────────────────────────
     zichtbaar = False
-    if config["heeft_browser"]:
+    if heeft_browser_optie:
         zichtbaar = questionary.confirm(
             "Browser zichtbaar tonen? (voor debuggen)",
             default=False,
@@ -803,13 +819,13 @@ def tui_main(gemeenten: list[dict]) -> None:
     tabel = Table(box=box.ROUNDED, border_style="dim", show_header=False, padding=(0, 1))
     tabel.add_column("", style="dim")
     tabel.add_column("", style="bold")
-    tabel.add_row("Type", config["label"])
+    tabel.add_row("Type", type_label)
     tabel.add_row("Gemeenten", str(len(te_verwerken)))
     tabel.add_row("Orgaan", orgaan or "[dim]Alle organen[/dim]")
     tabel.add_row("Periode", f"Laatste {maanden} maand(en)")
     tabel.add_row("Uitvoermap", f"{output}/<gemeente>/")
     tabel.add_row("Documentfilter", doc_filter or "[dim]Geen[/dim]")
-    if config["heeft_agendapunten"]:
+    if heeft_agendapunten_optie:
         tabel.add_row("Agendapunten", "Ja" if agendapunten else "Nee")
     console.print(Panel(tabel, title="[bold]Overzicht[/bold]", border_style="cyan"))
     console.print()
