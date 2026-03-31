@@ -500,25 +500,32 @@ def bouw_commando(
     output_pad = str(Path(output_basis) / slug)
 
     cmd = ["uv", "run", "python", scraper]
-    # Voor scrapers waar de gemeente-identiteit in het URL-pad zit (bijv. deliberations.be/{slug}
-    # of publicatie.gelinkt-notuleren.vlaanderen.be/{gemeente}/{classificatie}),
-    # is de volledige URL nodig; voor alle andere scrapers volstaat base_url (schema+netloc).
-    _volledige_url_types = {"deliberations", "gelinktnotuleren"}
-    cmd += ["--base-url", gemeente["url"] if type_ in _volledige_url_types else gemeente["base_url"]]
 
-    if type_ == "imio":
-        # scraper_imio.py heeft geen --orgaan/--alle (organen-stijl); enkel --base-url + --maanden
-        pass
-    # irisnet heeft één scraper voor alle Brusselse gemeenten; --alle zou alle 10 scrapen.
-    # Geef dus altijd --gemeente mee zodat enkel de gevraagde gemeente gescraped wordt.
-    elif type_ == "irisnet":
+    if type_ == "ibabs":
+        # scraper_ibabs.py kent geen --base-url; de gemeente wordt opgezocht via --gemeente (naam/slug)
+        cmd += ["--gemeente", gemeente["gemeente"]]
         if orgaan:
             cmd += ["--orgaan", orgaan]
-        cmd += ["--gemeente", gemeente["gemeente"]]
-    elif orgaan:
-        cmd += ["--orgaan", orgaan]
     else:
-        cmd += ["--alle"]
+        # Voor scrapers waar de gemeente-identiteit in het URL-pad zit (bijv. deliberations.be/{slug}
+        # of publicatie.gelinkt-notuleren.vlaanderen.be/{gemeente}/{classificatie}),
+        # is de volledige URL nodig; voor alle andere scrapers volstaat base_url (schema+netloc).
+        _volledige_url_types = {"deliberations", "gelinktnotuleren"}
+        cmd += ["--base-url", gemeente["url"] if type_ in _volledige_url_types else gemeente["base_url"]]
+
+        if type_ == "imio":
+            # scraper_imio.py heeft geen --orgaan/--alle (organen-stijl); enkel --base-url + --maanden
+            pass
+        # irisnet heeft één scraper voor alle Brusselse gemeenten; --alle zou alle 10 scrapen.
+        # Geef dus altijd --gemeente mee zodat enkel de gevraagde gemeente gescraped wordt.
+        elif type_ == "irisnet":
+            if orgaan:
+                cmd += ["--orgaan", orgaan]
+            cmd += ["--gemeente", gemeente["gemeente"]]
+        elif orgaan:
+            cmd += ["--orgaan", orgaan]
+        else:
+            cmd += ["--alle"]
 
     cmd += ["--maanden", str(maanden)]
     cmd += ["--output", output_pad]

@@ -327,13 +327,24 @@ def scrape_gemeente(
 
     logger.info("▶  %s  (vipKey=%s, grensdatum=%s)", gemeente, org_key, grensdatum)
 
+    # NL→FR vertaling voor veelgebruikte orgaannamen (publi.irisnet.be is Franstalig)
+    _NL_NAAR_FR: dict[str, str] = {
+        "gemeenteraad": "conseil communal",
+        "college van burgemeester en schepenen": "collège des bourgmestre",
+        "college": "collège",
+        "ocmw": "cpas",
+        "raad voor maatschappelijk welzijn": "cpas",
+    }
+
     mappen = haal_mappen(org_key)
     if not mappen:
         logger.warning("Geen mappen gevonden voor %s", gemeente)
         return 0, 0
 
     if map_filter:
-        mappen = [m for m in mappen if map_filter.lower() in m["naam"].lower()]
+        zoekterm = map_filter.lower()
+        zoekterm = _NL_NAAR_FR.get(zoekterm, zoekterm)
+        mappen = [m for m in mappen if zoekterm in m["naam"].lower()]
         logger.info("  Filter '%s' -> %d map(pen) over", map_filter, len(mappen))
 
     alle_docs: list[dict] = []

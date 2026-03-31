@@ -406,12 +406,24 @@ def scrape_gemeente(
                 for pagina_nr in range(1, pagina_max + 1):
                     r = _get(f"{listing_url}{sep}page={pagina_nr}")
                     if r and r.status_code == 200:
+                        # Stop met extra pagina's ophalen als alle dateerbare links op deze
+                        # pagina ouder zijn dan grensdatum (listing is nieuw→oud gesorteerd).
+                        verg_urls = _vergadering_links_van_html(r.text, vergadering_re)
+                        dateerbaar = [datum_uit_pad(urlparse(u).path) for u in verg_urls]
+                        dateerbaar = [d for d in dateerbaar if d is not None]
+                        if dateerbaar and all(d < grensdatum for d in dateerbaar):
+                            break
                         listing_htmls.append((r.text, f"{listing_url}{sep}page={pagina_nr}"))
                 gezien_verg: set[str] = set()
                 for listing_html, _ in listing_htmls:
                     for verg_url in _vergadering_links_van_html(listing_html, vergadering_re):
                         if verg_url not in gezien_verg:
                             gezien_verg.add(verg_url)
+                            # Sla vergadering over als URL-datum duidelijk vóór grensdatum ligt.
+                            # (URLs zonder datum worden altijd opgehaald.)
+                            verg_datum = datum_uit_pad(urlparse(verg_url).path)
+                            if verg_datum is not None and verg_datum < grensdatum:
+                                continue
                             r = _get(verg_url)
                             if r and r.status_code == 200:
                                 paginas.append((r.text, verg_url))
