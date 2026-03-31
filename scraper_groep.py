@@ -15,6 +15,7 @@ Ondersteunde types:
   deliberations    deliberations.be · conseilcommunal.be                    (HTML/PDF)
   irisnet          publi.irisnet.be                                         (geen scraper)
   icordis          *.be/file/download — Icordis CMS (LCP nv)               (HTML/PDF)
+  gelinktnotuleren publicatie.gelinkt-notuleren.vlaanderen.be               (HTML)
   pubcon           app-pubcon-*.azurewebsites.net/LBLOD                     (HTML/PDF)
   wordpress        */wp-content/uploads* · www.st.vith.be                   (HTML/PDF)
   docodis          *.be/AC-file/docodis — Docodis documentbeheer CMS        (HTML/PDF)
@@ -206,6 +207,14 @@ TYPES: dict[str, dict] = {
         "heeft_agendapunten": False,
         "kleur": "bright_green",
     },
+    "gelinktnotuleren": {
+        "label": "Gelinkt Notuleren Publicatie",
+        "beschrijving": "publicatie.gelinkt-notuleren.vlaanderen.be — Vlaams centraal publicatieplatform",
+        "scraper": "scraper_gelinktnotuleren.py",
+        "heeft_browser": False,
+        "heeft_agendapunten": False,
+        "kleur": "bright_magenta",
+    },
     "docodis": {
         "label": "Docodis",
         "beschrijving": "*.be/AC-file/docodis — Docodis documentbeheer CMS",
@@ -392,6 +401,8 @@ def detecteer_type(url: str) -> str:
         return "schaerbeek"
     if "/file/download" in u:
         return "icordis"
+    if "publicatie.gelinkt-notuleren.vlaanderen.be" in u:
+        return "gelinktnotuleren"
     if "app-pubcon-" in u and "azurewebsites.net" in u:
         return "pubcon"
     if "/wp-content/uploads" in u or "www.st.vith.be" in u or "/app/uploads" in u or "/fileadmin/gemeinde_amel" in u or "/pv-et-resumes-du-conseil" in u or "@@folder_listing" in u:
@@ -489,9 +500,11 @@ def bouw_commando(
     output_pad = str(Path(output_basis) / slug)
 
     cmd = ["uv", "run", "python", scraper]
-    # Voor scrapers waar de gemeente-identiteit in het URL-pad zit (bijv. deliberations.be/{slug}),
+    # Voor scrapers waar de gemeente-identiteit in het URL-pad zit (bijv. deliberations.be/{slug}
+    # of publicatie.gelinkt-notuleren.vlaanderen.be/{gemeente}/{classificatie}),
     # is de volledige URL nodig; voor alle andere scrapers volstaat base_url (schema+netloc).
-    cmd += ["--base-url", gemeente["url"] if type_ == "deliberations" else gemeente["base_url"]]
+    _volledige_url_types = {"deliberations", "gelinktnotuleren"}
+    cmd += ["--base-url", gemeente["url"] if type_ in _volledige_url_types else gemeente["base_url"]]
 
     if type_ == "imio":
         # scraper_imio.py heeft geen --orgaan/--alle (organen-stijl); enkel --base-url + --maanden

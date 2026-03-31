@@ -279,8 +279,16 @@ def haal_organen_via_playwright() -> list[dict]:
     Twee strategieën (in volgorde):
     1. Onderschep de fetchcalendar JSON-API en extraheer unieke organ-namen.
     2. Lees <select#organs> uit de gerenderde DOM (oudere portaalversie).
+
+    Wanneer deze functie vanuit een asyncio event loop wordt aangeroepen (bv.
+    via questionary/prompt_toolkit in start.py), wordt de sync-Playwright code
+    in een aparte thread uitgevoerd zodat het "sync API inside asyncio loop"
+    probleem wordt omzeild.
     """
-    try:
+    import asyncio
+    import concurrent.futures
+
+    def _run() -> list[dict]:
         calendar_meetings: list[dict] = []
 
         def _on_response(response):
@@ -327,6 +335,16 @@ def haal_organen_via_playwright() -> list[dict]:
                 return organen
             finally:
                 browser.close()
+
+    try:
+        try:
+            asyncio.get_running_loop()
+            # Er loopt al een asyncio loop → voer Playwright uit in een aparte thread
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_run).result()
+        except RuntimeError:
+            # Geen actieve loop → direct aanroepen
+            return _run()
     except Exception as e:
         print(f"  [!] Playwright organen ophalen mislukt: {e}")
         return []
