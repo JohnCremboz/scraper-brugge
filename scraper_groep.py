@@ -58,6 +58,13 @@ SCRIPT_DIR = Path(__file__).parent
 
 console = Console()
 
+
+def _url_syntax_ok(url: str) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
 # ---------------------------------------------------------------------------
 # Configuratie per websitetype
 # ---------------------------------------------------------------------------
@@ -429,6 +436,8 @@ def detecteer_type(url: str) -> str:
 def extraheer_base_url(url: str) -> str:
     """Geef schema + netloc terug (zonder trailing slash)."""
     parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
@@ -441,11 +450,21 @@ def lees_csv() -> list[dict]:
     gemeenten: list[dict] = []
     with open(CSV_PAD, encoding="utf-8") as f:
         reader = csv.reader(f, delimiter=";")
-        next(reader)  # header overslaan
-        for rij in reader:
+        header = next(reader, None)
+        if not header or len(header) < 2:
+            console.print("[red]CSV-header ontbreekt of heeft te weinig kolommen[/red]")
+            return gemeenten
+        for lijn_nr, rij in enumerate(reader, start=2):
             gemeente = rij[0].strip() if len(rij) > 0 else ""
             url = rij[1].strip() if len(rij) > 1 else ""
             if not gemeente:
+                console.print(f"[yellow]Lijn {lijn_nr}: lege gemeentenaam, rij overgeslagen[/yellow]")
+                continue
+            if len(rij) < 2:
+                console.print(f"[yellow]Lijn {lijn_nr}: te weinig kolommen, rij overgeslagen[/yellow]")
+                continue
+            if url and not _url_syntax_ok(url):
+                console.print(f"[yellow]Lijn {lijn_nr}: ongeldige URL-syntax voor {gemeente}, rij overgeslagen[/yellow]")
                 continue
             type_ = detecteer_type(url)
             base_url = extraheer_base_url(url) if url else ""

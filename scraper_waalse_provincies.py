@@ -355,8 +355,8 @@ def _detecteer_provincie(base_url: str) -> ProvincieConfig | None:
 # ---------------------------------------------------------------------------
 
 def genereer_html(vergaderingen: list[dict], cfg: ProvincieConfig, output_dir: Path) -> Path:
-    from html_output import doc_badges_html, genereer_html_tabel
-    html_path = output_dir.parent / f"{sanitize_filename(cfg.naam)}.html"
+    from html_output import doc_badges_html, genereer_html_tabel, html_output_path
+    html_path = html_output_path(output_dir, cfg.naam)
     rijen = [
         [v["datum"], v["orgaan"], doc_badges_html(v.get("documenten", []), html_path)]
         for v in vergaderingen

@@ -178,6 +178,9 @@ def init_session(base_url: str) -> None:
 
 
 def _get(url: str):
+    if SESSION is None or _config is None:
+        logger.warning("Sessie niet geïnitialiseerd voor GET: %s", url)
+        return None
     return rate_limited_get(SESSION, url, _config)
 
 
@@ -234,6 +237,9 @@ def datum_uit_pad(pad: str) -> date | None:
 
 def _pdfs_van_html(html: str, base: str, pdf_re: re.Pattern | None = None) -> list[dict]:
     """Verzamel alle PDF-links uit HTML, geef {'url', 'naam'} terug."""
+    if not html or not html.strip():
+        logger.warning("Lege HTML ontvangen bij PDF-extractie")
+        return []
     patroon = pdf_re if pdf_re is not None else _DRUPAL_PDF_RE
     soup = BeautifulSoup(html, "lxml")
     gezien: set[str] = set()
@@ -255,6 +261,9 @@ def _pdfs_van_html(html: str, base: str, pdf_re: re.Pattern | None = None) -> li
 
 def _vergadering_links_van_html(html: str, patroon: re.Pattern) -> list[str]:
     """Verzamel vergadering-detailpagina-links uit HTML."""
+    if not html or not html.strip():
+        logger.warning("Lege HTML ontvangen bij vergadering-link extractie")
+        return []
     base_netloc = urlparse(BASE_URL).netloc
     soup = BeautifulSoup(html, "lxml")
     gezien: set[str] = set()

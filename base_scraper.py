@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -89,6 +90,7 @@ class ScraperConfig:
 # ---------------------------------------------------------------------------
 
 _last_request_time: float = 0.0
+_rate_limit_lock = threading.Lock()
 
 
 def create_session(config: ScraperConfig) -> requests.Session:
@@ -137,14 +139,15 @@ def rate_limited_get(
     tussen opeenvolgende requests.
     """
     global _last_request_time
-    
-    elapsed = time.time() - _last_request_time
-    if elapsed < config.rate_limit_delay:
-        time.sleep(config.rate_limit_delay - elapsed)
-    
+
+    with _rate_limit_lock:
+        elapsed = time.time() - _last_request_time
+        if elapsed < config.rate_limit_delay:
+            time.sleep(config.rate_limit_delay - elapsed)
+        _last_request_time = time.time()
+
     kwargs.setdefault("timeout", config.timeout)
     response = session.get(url, **kwargs)
-    _last_request_time = time.time()
     
     return response
 
@@ -296,6 +299,16 @@ def safe_output_path(
     return target
 
 
+def validate_url(url: str) -> bool:
+    """
+    Valideer dat een URL een bruikbaar HTTP(S) doel is.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    parsed = urlparse(url.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 # ---------------------------------------------------------------------------
 # Document download
 # ---------------------------------------------------------------------------
@@ -334,6 +347,12 @@ def download_document(
     """
     # Maak absolute URL
     full_url = urljoin(config.base_url, doc_url) if not doc_url.startswith("http") else doc_url
+    if not validate_url(full_url):
+        return DownloadResult(
+            url=full_url,
+            success=False,
+            error="Ongeldige document-URL",
+        )
     
     try:
         resp = rate_limited_get(session, full_url, config, stream=True, allow_redirects=True)

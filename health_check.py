@@ -67,6 +67,10 @@ def _lees_csv(pad: Path) -> tuple[list[dict], list[str]]:
             gemeente = rij[0].strip() if len(rij) > 0 else ""
             url      = rij[1].strip() if len(rij) > 1 else ""
             if not gemeente:
+                meldingen.append(f"lijn {lijn_nr}: lege gemeentenaam overgeslagen")
+                continue
+            if len(rij) < 2:
+                meldingen.append(f"lijn {lijn_nr} ({gemeente}): te weinig kolommen")
                 continue
             rijen.append({"gemeente": gemeente, "url": url, "lijn": lijn_nr})
 

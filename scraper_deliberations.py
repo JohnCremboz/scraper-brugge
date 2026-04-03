@@ -89,6 +89,12 @@ def haal_gemeenten_lijst() -> list[str]:
     gemeenten = []
     with open(csv_path, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f, delimiter=';')
+        if not reader.fieldnames:
+            logger.warning("CSV-header ontbreekt in simba-source.csv")
+            return []
+        if "Bron" not in reader.fieldnames:
+            logger.warning("Kolom 'Bron' ontbreekt in simba-source.csv")
+            return []
         for row in reader:
             bron = row.get('Bron', '')
             if 'deliberations.be' in bron:
@@ -120,9 +126,15 @@ def haal_beslissingen(gemeente: str, max_items: int = 100) -> list[dict]:
     resp = _get(url + '?' + '&'.join(f"{k}={v}" for k, v in params.items()))
     if resp is None:
         return []
+    if not resp.text.strip():
+        logger.warning("Lege HTML-respons voor beslissingen van %s", gemeente)
+        return []
     
     soup = BeautifulSoup(resp.text, 'lxml')
     items = soup.find_all('div', class_='item-card')
+    if not items:
+        logger.warning("Geen item-card elementen gevonden voor beslissingen van %s", gemeente)
+        return []
     
     beslissingen = []
     for item in items:
@@ -194,9 +206,15 @@ def haal_publicaties(gemeente: str, max_items: int = 100) -> list[dict]:
     resp = _get(url + '?' + '&'.join(f"{k}={v}" for k, v in params.items()))
     if resp is None:
         return []
+    if not resp.text.strip():
+        logger.warning("Lege HTML-respons voor publicaties van %s", gemeente)
+        return []
     
     soup = BeautifulSoup(resp.text, 'lxml')
     items = soup.find_all('div', class_='item-card')
+    if not items:
+        logger.warning("Geen item-card elementen gevonden voor publicaties van %s", gemeente)
+        return []
     
     publicaties = []
     for item in items:
@@ -227,6 +245,9 @@ def zoek_documenten(item_url: str) -> list[dict]:
     """
     resp = _get(item_url)
     if resp is None:
+        return []
+    if not resp.text.strip():
+        logger.warning("Lege HTML-respons op item-pagina: %s", item_url)
         return []
     
     soup = BeautifulSoup(resp.text, 'lxml')

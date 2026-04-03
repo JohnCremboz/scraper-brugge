@@ -41,6 +41,8 @@ _config: ScraperConfig | None = None
 
 
 def _get(url: str) -> requests.Response | None:
+    if SESSION is None:
+        return None
     return robust_get(SESSION, url)
 
 
@@ -61,14 +63,24 @@ DUTCH_MONTHS = {
 def haal_ibabs_gemeenten() -> list[dict]:
     resultaat = []
     with open(CSV_PATH, encoding="utf-8") as f:
-        for regel in f:
+        for lijn_nr, regel in enumerate(f, start=1):
             regel = regel.strip()
-            if not regel or regel.startswith("Gemeente"):
+            if not regel:
                 continue
-            delen = regel.split(";", 1)
+            if lijn_nr == 1:
+                continue
+            delen = regel.split(";")
             if len(delen) < 2:
+                print(f"[!] CSV lijn {lijn_nr}: te weinig kolommen, overgeslagen")
                 continue
             gemeente, url = delen[0].strip(), delen[1].strip()
+            if not gemeente:
+                print(f"[!] CSV lijn {lijn_nr}: lege gemeentenaam, overgeslagen")
+                continue
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                print(f"[!] CSV lijn {lijn_nr} ({gemeente}): ongeldige URL, overgeslagen")
+                continue
             m = IBABS_PATTERN.search(url)
             if m:
                 slug = m.group(1)
@@ -108,6 +120,9 @@ def haal_vergaderingen(base_url: str, maanden: int = 3) -> list[dict]:
     resp = _get(f"{base_url}/Calendar")
     if resp is None:
         return []
+    if not resp.text.strip():
+        print(f"[!] Lege HTML ontvangen voor Calendar: {base_url}")
+        return []
 
     soup = BeautifulSoup(resp.text, "lxml")
     cat_links = [
@@ -143,7 +158,10 @@ def haal_vergaderingen(base_url: str, maanden: int = 3) -> list[dict]:
 
             verg_soup = BeautifulSoup(verg_resp.text, "lxml")
             # Datum parsing vanuit de title: "... maandag 26 januari 2026 20:00 ..."
-            title = verg_soup.title.string if verg_soup.title else ""
+            title_tag = verg_soup.title
+            if title_tag is None or title_tag.string is None:
+                continue
+            title = title_tag.string
             datum = _parseer_datum(title)
             if datum is None:
                 continue
@@ -209,6 +227,10 @@ def haal_vergadering_details(vergadering: dict, base_url: str) -> dict:
     if soup is None:
         resp = _get(vergadering["url"])
         if resp is None:
+            vergadering["agendapunten"] = []
+            vergadering["documenten"] = []
+            return vergadering
+        if not resp.text.strip():
             vergadering["agendapunten"] = []
             vergadering["documenten"] = []
             return vergadering
@@ -281,8 +303,8 @@ def haal_vergadering_details(vergadering: dict, base_url: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def genereer_html(gemeente_naam: str, vergaderingen: list[dict], output_dir: Path) -> Path:
-    from html_output import agendapunten_html, doc_badges_html, genereer_html_tabel
-    html_path = output_dir.parent / f"{sanitize_filename(gemeente_naam)}.html"
+    from html_output import agendapunten_html, doc_badges_html, genereer_html_tabel, html_output_path
+    html_path = html_output_path(output_dir, gemeente_naam)
     rijen = [
         [
             v["datum"],

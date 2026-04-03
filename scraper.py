@@ -18,6 +18,7 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from requests import RequestException
 from tqdm import tqdm
 
 from base_scraper import (
@@ -42,7 +43,11 @@ def init_session():
     _config = ScraperConfig(base_url=BASE_URL, output_dir=Path("."))
     try:
         SESSION = create_session(_config)
-    except Exception as e:
+    except RequestException as e:
+        logger.warning("Sessie-initialisatie request-fout: %s", e)
+    except OSError as e:
+        logger.warning("Sessie-initialisatie OS-fout: %s", e)
+    except RuntimeError as e:
         logger.warning("Sessie-initialisatie mislukt: %s", e)
 
 # Initialiseer direct bij import voor compatibiliteit
@@ -85,8 +90,10 @@ def haal_document_links_van_pagina(url: str) -> list[dict]:
             if "/document/" in href:
                 tekst = link.get_text(strip=True) or href.split("/")[-1]
                 documenten.append({"url": href, "naam": tekst})
-    except Exception as e:
-        print(f"      [!] Fout ophalen {url}: {e}")
+    except RequestException as e:
+        logger.warning("Fout ophalen %s: %s", url, e)
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Parse-fout ophalen %s: %s", url, e)
 
     return documenten
 
@@ -106,8 +113,10 @@ def haal_agenda_punten(vergadering_url: str) -> list[str]:
                 full_url = urljoin(BASE_URL, href)
                 if full_url not in agendapunten:
                     agendapunten.append(full_url)
-    except Exception as e:
-        print(f"      [!] Fout agendapunten {vergadering_url}: {e}")
+    except RequestException as e:
+        logger.warning("Fout agendapunten %s: %s", vergadering_url, e)
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Parse-fout agendapunten %s: %s", vergadering_url, e)
 
     return agendapunten
 
@@ -140,7 +149,11 @@ def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
 
         return True, titel
 
-    except Exception:
+    except RequestException as e:
+        logger.warning("Netwerkfout bij vergadering %s: %s", vergadering_url, e)
+        return False, ""
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Parse-fout bij vergadering %s: %s", vergadering_url, e)
         return False, ""
 
 
@@ -219,8 +232,10 @@ def haal_orgaan_uuid(page, orgaan_naam: str) -> str | None:
                 label_tekst = label.get_attribute("title") or label.inner_text().strip()
                 if orgaan_naam.lower() in label_tekst.lower() or label_tekst.lower() in orgaan_naam.lower():
                     return val
-    except Exception as e:
-        print(f"  [!] Fout bij zoeken UUID: {e}")
+    except PlaywrightTimeout as e:
+        logger.warning("Timeout bij zoeken UUID voor '%s': %s", orgaan_naam, e)
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Fout bij zoeken UUID voor '%s': %s", orgaan_naam, e)
     return None
 
 
@@ -237,8 +252,10 @@ def haal_vergadering_links_van_pagina(page) -> list[str]:
                 full_url = urljoin(BASE_URL, href)
                 if full_url not in links:
                     links.append(full_url)
-    except Exception as e:
-        print(f"  [!] Fout bij ophalen vergaderlinks: {e}")
+    except PlaywrightTimeout as e:
+        logger.warning("Timeout bij ophalen vergaderlinks: %s", e)
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Fout bij ophalen vergaderlinks: %s", e)
     return links
 
 
@@ -257,8 +274,10 @@ def open_orgaan_dropdown(page) -> bool:
             trigger.click()
             time.sleep(0.5)
             return True
-    except Exception as e:
-        print(f"  [!] Fout bij openen dropdown: {e}")
+    except PlaywrightTimeout as e:
+        logger.warning("Timeout bij openen dropdown: %s", e)
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Fout bij openen dropdown: %s", e)
     return False
 
 
@@ -289,7 +308,10 @@ def activeer_orgaan_filter(page, orgaan_naam: str) -> bool:
                 if all_input.is_checked():
                     all_label.click(timeout=5000)
                     time.sleep(0.3)
-            except Exception:
+            except PlaywrightTimeout as e:
+                logger.warning("Timeout bij resetten van alle-filters: %s", e)
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.warning("Fout bij resetten van alle-filters: %s", e)
                 pass
 
         # Selecteer het gewenste orgaan
@@ -300,12 +322,18 @@ def activeer_orgaan_filter(page, orgaan_naam: str) -> bool:
                 time.sleep(0.5)
                 print(f"  Filter actief: {orgaan_naam} (UUID: {uuid})")
                 return True
-            except Exception as e:
+            except PlaywrightTimeout as e:
+                print(f"  [!] Filter timeout: {e}")
+                print(f"  => Post-filter op titelnaam wordt altijd gebruikt")
+                return False
+            except (AttributeError, TypeError, ValueError) as e:
                 print(f"  [!] Filter klikken mislukt: {e}")
                 print(f"  => Post-filter op titelnaam wordt altijd gebruikt")
                 return False
 
-    except Exception as e:
+    except PlaywrightTimeout as e:
+        print(f"  [!] Filter timeout: {e}")
+    except (AttributeError, TypeError, ValueError) as e:
         print(f"  [!] Filter fout: {e}")
     return False
 
@@ -322,8 +350,10 @@ def navigeer_vorige_maand(page) -> str | None:
         page.wait_for_load_state("networkidle", timeout=15000)
         time.sleep(0.5)
         return titel_attr or huidige_maand_titel(page)
-    except Exception as e:
-        print(f"  [!] Maandnavigatie mislukt: {e}")
+    except PlaywrightTimeout as e:
+        logger.warning("Timeout bij maandnavigatie: %s", e)
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Maandnavigatie mislukt: %s", e)
     return None
 
 
@@ -332,7 +362,11 @@ def huidige_maand_titel(page) -> str:
     try:
         el = page.locator("li.page-item.current a").first
         return el.inner_text().strip()
-    except Exception:
+    except PlaywrightTimeout as e:
+        logger.warning("Timeout bij ophalen maandtitel: %s", e)
+        return ""
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Fout bij ophalen maandtitel: %s", e)
         return ""
 
 

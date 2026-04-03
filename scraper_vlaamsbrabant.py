@@ -182,8 +182,8 @@ def haal_detail(publicatie: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def genereer_html(publicaties: list[dict], output_dir: Path) -> Path:
-    from html_output import agendapunten_html, genereer_html_tabel
-    html_path = output_dir.parent / f"{sanitize_filename(NAAM)}.html"
+    from html_output import agendapunten_html, genereer_html_tabel, html_output_path
+    html_path = html_output_path(output_dir, NAAM)
     rijen = [
         [
             p["datum_tekst"],

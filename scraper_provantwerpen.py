@@ -103,8 +103,8 @@ def haal_vergaderingen(maanden: int = 6) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def genereer_html(vergaderingen: list[dict], output_dir: Path) -> Path:
-    from html_output import doc_badges_html, genereer_html_tabel
-    html_path = output_dir.parent / f"{sanitize_filename(NAAM)}.html"
+    from html_output import doc_badges_html, genereer_html_tabel, html_output_path
+    html_path = html_output_path(output_dir, NAAM)
     rijen = [
         [v["datum"], v["orgaan"], doc_badges_html(v.get("documenten", []), html_path)]
         for v in vergaderingen

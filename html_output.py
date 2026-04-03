@@ -2,6 +2,7 @@
 Gedeelde HTML-uitvoer hulpfuncties voor scraper-resultaten.
 
 Exporteert:
+  html_output_path()       - geconsolideerde locatie voor HTML-overzichtspaden
   doc_badges_html()       - document badges als HTML-string
   agendapunten_html()     - agendapuntenlijst (ul of ol) als HTML-string
   genereer_html_tabel()   - tabel-gebaseerde HTML-pagina (waalse_provincies,
@@ -37,6 +38,12 @@ _TABEL_CSS = """
 # ---------------------------------------------------------------------------
 # Hulpfuncties voor cel-inhoud
 # ---------------------------------------------------------------------------
+
+def html_output_path(output_dir: Path, naam: str, in_output_dir: bool = False) -> Path:
+    """Bepaal het standaard pad voor HTML-uitvoerbestanden."""
+    basis = output_dir if in_output_dir else output_dir.parent
+    return basis / f"{sanitize_filename(naam)}.html"
+
 
 def doc_badges_html(documenten: list[dict], output_pad: Path) -> str:
     """Render een lijst documenten als badge-links.
