@@ -186,6 +186,94 @@ Resultaat van `uv run python health_check.py`: **1 probleem** (574/575 OK).
 
 ## Openstaande taken
 
+### Deliberations.be — audit (mei 2026)
+
+Alle 167 deliberations.be-gemeenten systematisch onderzocht. Bevindingen:
+
+**Al geïmplementeerd (11 switches naar eigen site):**
+- Bouillon → www.bouillon.be (imio, Structuur B)
+- Ciney → www.ciney.be (imio, Structuur A)
+- Donceel → www.donceel.be (imio, Structuur B, chaotische bestandsnamen)
+- Villers-la-Ville → www.villers-la-ville.be (imio, Structuur B)
+- Beaumont → www.beaumont.be (imio, Structuur B)
+- Cerfontaine → www.cerfontaine.be (imio, Structuur B, bevat ook niet-PV docs)
+- Ecaussinnes → www.ecaussinnes.be (imio, Structuur A + ajax_load)
+- Estaimpuis → www.estaimpuis.be (imio, Structuur B, WordPress)
+- Onhaye → www.onhaye.be (imio, Structuur B, 134 PDFs)
+- Saint-Hubert → www.saint-hubert.be (imio, Structuur B)
+- Sivry-Rance → www.sivry-rance.be (imio, Structuur A + ajax_load)
+
+**Vereist Playwright (JS-rendered):**
+- [ ] **Marchin** → marchin.be/bienvenue-a-marchin/conseil-communal/pv-du-conseil-communal/ (WordPress + Elementor, 40 PDFs achter JS)
+
+**Geblokkeerd door 403 / niet bereikbaar — eigen iMio-site vermoedelijk PDFs (nog te verifiëren):**
+- [ ] **Lierneux** → lierneux.be/vie-communale/vie-politique/ordre-du-jour-du-conseil-communal/ (403, 22 PVs 2020–2026 gezien door agent)
+- [ ] **Attert** → www.attert.be/.../proces-verbaux (iMio, 403)
+- [ ] **Beauraing** → www.beauraing.be/.../proces-verbaux (iMio, 403)
+- [ ] **Bertrix** → www.bertrix.be/.../proces-verbaux (iMio, minimale respons)
+- [ ] **Celles** → iMio PV-pad, 403
+- [ ] **Comines-Warneton** → www.villedecomines-warneton.be (iMio, 403)
+- [ ] **Érezée** → iMio PV-pad, 403
+- [ ] **Étalle** → iMio PV-pad, minimale respons
+- [ ] **Fauvillers** → iMio PV-pad, minimale respons
+- [ ] **Ferrières** → iMio, 403
+- [ ] **Florennes** → iMio, 403
+- [ ] **Hamoir** → www.hamoir.be/.../proces-verbaux (iMio, 403)
+- [ ] **Jemeppe-sur-Sambre** → WordPress, geen PV PDFs gevonden, nader onderzoek
+- [ ] **Lessines** → iMio PV-pad, 403
+- [ ] **Manhay** → iMio PV-pad, 403
+- [ ] **Martelange** → iMio, 403
+- [ ] **Montigny-le-Tilleul** → iMio PV-pad bestaat, nader onderzoek
+- [ ] **Nandrin** → iMio, 403 (delib.be heeft al 2 annex-PDFs)
+- [ ] **Olne** → iMio, 404 op pad
+- [ ] **Péruwelz** → iMio, 403
+- [ ] **Profondeville** → iMio, 403 (ook login wall op delib.be decisions)
+- [ ] **Sambreville** → iMio, 403
+- [ ] **Somme-Leuze** → iMio, 403
+- [ ] **Spa** → ville-spa.be (ECONNREFUSED), alternatief URL nodig
+- [ ] **Stavelot** → iMio, 403
+- [ ] **Theux** → iMio, 403
+- [ ] **Vresse-sur-Semois** → iMio login wall op hoofdpagina
+
+**Verkeerde/kapotte URL in CSV — correct URL nog te vinden:**
+- [ ] **Chimay** → chimay.com = biersite; juiste gemeente-URL onbekend
+- [ ] **Court-Saint-Étienne** → onofficiële fansite gevonden; officieel URL onbekend
+- [ ] **Dour** → www.dour.be ECONNREFUSED
+- [ ] **Le Roeulx** → leroeulx.be ECONNREFUSED
+- [ ] **Libramont** → ECONNREFUSED
+- [ ] **Limbourg** → ECONNREFUSED
+- [ ] **Manage** → TLS-certificaatfout op www.manage.be
+- [ ] **Marche-en-Famenne** → marcheenfamenne.be = Dovendi domeinmarktplaats
+- [ ] **Merbes-le-Château** → www.merbes-le-chateau.be gehijackt door loodgietersbedrijf
+- [ ] **Trois-Ponts** → trois-ponts.be pas geregistreerd, geen inhoud
+
+**Historisch archief op eigen site (delib.be is actueler voor recent):**
+- [ ] **Beyne-Heusay** → www.beyne-heusay.be/index.php/proces-verbaux-cc (145 PVs 2006–2023, delib.be 2023+) — overwegen als aanvulling
+- [ ] **Waimes** → www.waimes.be/.../pv-du-conseil-communal/ (39 PVs 2019–2023, delib.be 2024+)
+- **Frasnes-lez-Anvaing** → eigen site stopt 2023, delib.be is nu de bron ← al gecorrigeerd (CSV wijst naar delib.be)
+
+**Deliberations.be structuur (vastgesteld):**
+- 156/167 beslissings-endpoint publiek toegankelijk; 11 login wall (attert, beauraing, comines-warneton, houffalize, juprelle, manage, mouscron, oreye, profondeville, spa, vielsalm)
+- Slechts 2 gemeenten hebben echte PV PDFs op delib.be: **Mons** en **Seneffe**
+- Overige metadata-only; PDFs via bijlagen op detailpagina (zeldzaam)
+- Login wall detectie toegevoegd aan `scraper_deliberations.py`
+
+### Deliberations.be — scraper verbeteringen (mei 2026)
+
+- [x] Paginatie via `b_start` toegevoegd ✅
+- [x] Datum-cutoff via `--maanden` (stopt bij oudere pagina's) ✅
+- [x] `[:20]` cap verwijderd — alle items gecheckt ✅
+- [x] HTML-injectie gefixed (`html.escape()`) ✅
+- [x] Login wall detectie toegevoegd ✅
+- [x] Metadata-parsing gefixed (label `extract()` vóór `get_text()`) ✅
+- [x] Status-detectie gefixed (card eigen klassen i.p.v. kinderelementen) ✅
+- [x] Plone dubbele PDF-deduplicatie via `@@download` base-URL ✅
+
+### scraper_imio.py — verbeteringen (mei 2026)
+
+- [x] `_datum_uit_pad` fallback vervangt `_`/`-` door spaties vóór `_datum_uit_tekst` ✅ (pakt `Proces-verbal-02-mars-2026.pdf`, `proces_verbal_16_decembre_2025.pdf`)
+- [x] 11 nieuwe gemeenten toegevoegd aan GEMEENTEN en `_IMIO_HOSTS` ✅
+
 ### Onderhoud (jaarlijks)
 
 - [ ] **Province Namur**: voeg `/documents-du-conseil/2026-2/` toe aan `listing_paden` zodra die pagina aangemaakt wordt (eind 2026/begin 2027)

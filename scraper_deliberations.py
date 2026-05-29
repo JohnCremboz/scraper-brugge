@@ -8,7 +8,7 @@ beslissingen en publicaties.
 BELANGRIJKE OPMERKING:
 Op dit moment (maart 2026) bevat deliberations.be voornamelijk METADATA
 van beslissingen zonder consistente PDF bijlagen. De scraper verzamelt:
-- Beslissingstities en beschrijvingen  
+- Beslissingstities en beschrijvingen
 - Vergaderdata
 - Statussen (projet/definitief)
 - Links naar externe documenten (waar beschikbaar)
@@ -30,12 +30,13 @@ Gebruik:
 
 import argparse
 import csv
+import html
 import json
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlencode, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -59,6 +60,12 @@ BASE_URL = "https://deliberations.be"
 SESSION: requests.Session | None = None
 _config: ScraperConfig | None = None
 
+_FRENCH_MONTHS = {
+    "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
+    "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
+    "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12, "decembre": 12,
+}
+
 
 def init_session(base_url: str | None = None) -> None:
     """Initialiseer HTTP-sessie."""
@@ -72,7 +79,28 @@ def init_session(base_url: str | None = None) -> None:
 def _get(url: str) -> requests.Response | None:
     """GET helper — pad wordt relatief aan BASE_URL opgelost."""
     full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
-    return robust_get(SESSION, full_url, retries=1, timeout=30)
+    return robust_get(SESSION, full_url, retries=3, timeout=30)
+
+
+def _parse_french_date(datum_str: str) -> str | None:
+    """
+    Parse French date strings like "02 mars 2026" or "2 Mars 2026 (séance)".
+    Returns ISO date string or None.
+    """
+    if not datum_str:
+        return None
+    s = datum_str.split("(")[0].strip().lower()
+    parts = s.split()
+    if len(parts) == 3:
+        try:
+            day = int(parts[0])
+            month = _FRENCH_MONTHS.get(parts[1])
+            year = int(parts[2])
+            if month and 1 <= day <= 31 and 1900 <= year <= 2100:
+                return date(year, month, day).isoformat()
+        except (ValueError, TypeError):
+            pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +113,7 @@ def haal_gemeenten_lijst() -> list[str]:
     if not csv_path.exists():
         logger.warning("simba-source.csv niet gevonden")
         return []
-    
+
     gemeenten = []
     with open(csv_path, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f, delimiter=';')
@@ -98,139 +126,119 @@ def haal_gemeenten_lijst() -> list[str]:
         for row in reader:
             bron = row.get('Bron', '')
             if 'deliberations.be' in bron:
-                # Extraheer gemeente naam uit URL
                 parsed = urlparse(bron)
                 gemeente = parsed.path.strip('/').split('/')[0]
                 if gemeente:
                     gemeenten.append(gemeente)
-    
+
     return sorted(set(gemeenten))
 
 
 # ---------------------------------------------------------------------------
-# Beslissingen ophalen via faceted query
+# Items ophalen via faceted query (beslissingen + publicaties)
 # ---------------------------------------------------------------------------
 
-def haal_beslissingen(gemeente: str, max_items: int = 100) -> list[dict]:
-    """
-    Haal beslissingen op voor een gemeente.
-    
-    Returns lijst van {titel, url, datum, status, metadata} dicts.
-    """
-    url = f"{BASE_URL}/{gemeente}/decisions/@@faceted_query"
-    params = {
-        'b_size': str(max_items),
-        'b_start': '0',
-    }
-    
-    resp = _get(url + '?' + '&'.join(f"{k}={v}" for k, v in params.items()))
-    if resp is None:
-        return []
-    if not resp.text.strip():
-        logger.warning("Lege HTML-respons voor beslissingen van %s", gemeente)
-        return []
-    
-    soup = BeautifulSoup(resp.text, 'lxml')
-    items = soup.find_all('div', class_='item-card')
-    if not items:
-        logger.warning("Geen item-card elementen gevonden voor beslissingen van %s", gemeente)
-        return []
-    
-    beslissingen = []
-    for item in items:
-        # Haal link en titel
-        link = item.find('a', href=True)
-        if not link:
+_PAGE_SIZE = 20  # server ignores b_size, always returns 20
+
+
+def _parse_card(item, gemeente: str) -> dict | None:
+    """Parse one item-card div into a result dict."""
+    link = item.find("a", href=True)
+    if not link:
+        return None
+
+    item_url = urljoin(f"{BASE_URL}/{gemeente}", link["href"])
+
+    titel_elem = item.find(["h2", "h3", "h4"])
+    titel = titel_elem.get_text(strip=True) if titel_elem else link.get_text(strip=True)
+
+    metadata = {}
+    for row in item.find_all("div", class_="item-metadata-row"):
+        label_elem = row.find("div", class_="item-metadata-label")
+        if not label_elem:
             continue
-        
-        item_url = urljoin(f"{BASE_URL}/{gemeente}", link['href'])
-        
-        # Haal titel (vaak in <h3> of als link text)
-        titel_elem = item.find(['h2', 'h3', 'h4'])
-        titel = titel_elem.get_text(strip=True) if titel_elem else link.get_text(strip=True)
-        
-        # Haal metadata
-        metadata = {}
-        for row in item.find_all('div', class_='item-metadata-row'):
-            label_elem = row.find('div', class_='item-metadata-label')
-            value_elem = row.find('div', class_='item-metadata-value')
-            if label_elem and value_elem:
-                label = label_elem.get_text(strip=True)
-                value = value_elem.get_text(strip=True)
-                metadata[label] = value
-        
-        # Bepaal status (projet vs definitief)
-        status = "definitief"
-        if item.find('div', class_=lambda x: x and 'in_project' in str(x)):
-            status = "projet"
-        elif "Projet" in item.get_text():
-            status = "projet"
-        
-        # Parse datum indien beschikbaar
-        datum_str = metadata.get('Séance') or metadata.get('Date')
-        datum = None
-        if datum_str:
-            # Probeer datum te parsen (bijv. "02 Mars 2026")
-            try:
-                from datetime import datetime
-                # Simpele parse - kan worden verbeterd
-                if '(' in datum_str:
-                    datum_str = datum_str.split('(')[0].strip()
-                # TODO: Betere datum parsing
-            except:
-                pass
-        
-        beslissingen.append({
-            'titel': titel,
-            'url': item_url,
-            'datum': datum,
-            'status': status,
-            'metadata': metadata,
-        })
-    
-    return beslissingen
+        label_text = label_elem.get_text(strip=True)
+        # Value is in a <span> or <a> sibling — get text from row minus the label
+        label_elem.extract()
+        value_text = row.get_text(strip=True)
+        if label_text and value_text:
+            metadata[label_text] = value_text
 
+    card_classes = " ".join(item.get("class", []))
+    status = "projet" if "in_project" in card_classes else "definitief"
 
-# ---------------------------------------------------------------------------
-# Publicaties ophalen
-# ---------------------------------------------------------------------------
+    datum_str = metadata.get("Séance") or metadata.get("Date")
+    datum = _parse_french_date(datum_str) if datum_str else None
 
-def haal_publicaties(gemeente: str, max_items: int = 100) -> list[dict]:
-    """Haal publicaties op voor een gemeente (zelfde structuur als beslissingen)."""
-    url = f"{BASE_URL}/{gemeente}/publications/@@faceted_query"
-    params = {
-        'b_size': str(max_items),
-        'b_start': '0',
+    return {
+        "titel": titel,
+        "url": item_url,
+        "datum": datum,
+        "status": status,
+        "metadata": metadata,
     }
-    
-    resp = _get(url + '?' + '&'.join(f"{k}={v}" for k, v in params.items()))
-    if resp is None:
-        return []
-    if not resp.text.strip():
-        logger.warning("Lege HTML-respons voor publicaties van %s", gemeente)
-        return []
-    
-    soup = BeautifulSoup(resp.text, 'lxml')
-    items = soup.find_all('div', class_='item-card')
-    if not items:
-        logger.warning("Geen item-card elementen gevonden voor publicaties van %s", gemeente)
-        return []
-    
-    publicaties = []
-    for item in items:
-        link = item.find('a', href=True)
-        if not link:
-            continue
-        
-        item_url = urljoin(f"{BASE_URL}/{gemeente}", link['href'])
-        titel = link.get_text(strip=True)
-        
-        publicaties.append({
-            'titel': titel,
-            'url': item_url,
-        })
-    
-    return publicaties
+
+
+def _haal_items(
+    gemeente: str,
+    endpoint: str,
+    min_datum: date | None = None,
+) -> list[dict]:
+    """
+    Haal alle items op van een faceted_query endpoint, gepagineerd.
+
+    Stopt zodra een volledige pagina items terug heeft die ouder zijn dan
+    min_datum (items zijn gesorteerd nieuwste-eerst), of wanneer de server
+    minder dan _PAGE_SIZE items teruggeeft (laatste pagina).
+    """
+    base_url = f"{BASE_URL}/{gemeente}/{endpoint}/@@faceted_query"
+    result = []
+    b_start = 0
+
+    while True:
+        params = {"b_size": str(_PAGE_SIZE), "b_start": str(b_start)}
+        resp = _get(base_url + "?" + urlencode(params))
+        if resp is None or not resp.text.strip():
+            break
+
+        # Plone login wall: some municipalities gate their decisions endpoint.
+        # The server returns HTTP 200 with an auth form instead of data.
+        if "cookies ne sont pas activés" in resp.text or "fieldname-__ac_name" in resp.text:
+            logger.warning("Login wall op %s/%s — niet publiek toegankelijk", gemeente, endpoint)
+            break
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        cards = soup.find_all("div", class_="item-card")
+        if not cards:
+            break
+
+        cutoff_reached = False
+        for card in cards:
+            parsed = _parse_card(card, gemeente)
+            if parsed is None:
+                continue
+            if min_datum and parsed["datum"] and parsed["datum"] < min_datum.isoformat():
+                cutoff_reached = True
+                break
+            result.append(parsed)
+
+        if cutoff_reached or len(cards) < _PAGE_SIZE:
+            break
+
+        b_start += _PAGE_SIZE
+
+    if not result:
+        logger.warning("Geen item-card elementen gevonden voor %s/%s", gemeente, endpoint)
+
+    return result
+
+
+def haal_beslissingen(gemeente: str, min_datum: date | None = None) -> list[dict]:
+    return _haal_items(gemeente, "decisions", min_datum)
+
+
+def haal_publicaties(gemeente: str, min_datum: date | None = None) -> list[dict]:
+    return _haal_items(gemeente, "publications", min_datum)
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +248,7 @@ def haal_publicaties(gemeente: str, max_items: int = 100) -> list[dict]:
 def zoek_documenten(item_url: str) -> list[dict]:
     """
     Zoek documenten (PDF, Word) op een item detail pagina.
-    
+
     Returns lijst van {url, naam, type} dicts.
     """
     resp = _get(item_url)
@@ -249,42 +257,51 @@ def zoek_documenten(item_url: str) -> list[dict]:
     if not resp.text.strip():
         logger.warning("Lege HTML-respons op item-pagina: %s", item_url)
         return []
-    
-    soup = BeautifulSoup(resp.text, 'lxml')
+
+    soup = BeautifulSoup(resp.text, "lxml")
     documenten = []
-    
-    for link in soup.find_all('a', href=True):
-        href = link['href']
+    seen_base_urls: set[str] = set()
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
         text = link.get_text(strip=True)
         href_lower = href.lower()
-        
-        # Zoek PDF, Word documenten of download links
+
         doc_type = None
-        default_name = 'document'
-        
-        if '.pdf' in href_lower:
-            doc_type = 'pdf'
-            default_name = 'document.pdf'
-        elif '.doc' in href_lower or '.docx' in href_lower:
-            doc_type = 'word'
-            # Bepaal extensie
-            if '.docx' in href_lower:
-                default_name = 'document.docx'
-            else:
-                default_name = 'document.doc'
-        elif 'download' in href_lower:
-            # Generieke download link, probeer type te raden
-            doc_type = 'unknown'
-            default_name = 'document'
-        
-        if doc_type:
-            full_url = urljoin(item_url, href)
-            documenten.append({
-                'url': full_url,
-                'naam': text or default_name,
-                'type': doc_type,
-            })
-    
+
+        if ".pdf" in href_lower:
+            doc_type = "pdf"
+        elif ".docx" in href_lower:
+            doc_type = "word"
+        elif ".doc" in href_lower:
+            doc_type = "word"
+        elif "download" in href_lower:
+            doc_type = "unknown"
+
+        if not doc_type:
+            continue
+
+        full_url = urljoin(item_url, href)
+
+        # Plone serves each file at both a direct URL and a @@download/file/ URL.
+        # The @@download variant appends the filename again, causing double extensions
+        # (e.g. foo.pdf/@@download/file/foo.pdf.pdf). Deduplicate by base object URL.
+        base_url = full_url.split("/@@download/")[0] if "/@@download/" in full_url else full_url
+        if base_url in seen_base_urls:
+            continue
+        seen_base_urls.add(base_url)
+
+        # Prefer link text; fall back to filename from URL path (use base, not @@download path)
+        if not text:
+            url_path = urlparse(base_url).path
+            text = url_path.rstrip("/").split("/")[-1] or "document"
+
+        documenten.append({
+            "url": full_url,
+            "naam": text,
+            "type": doc_type,
+        })
+
     return documenten
 
 
@@ -293,27 +310,28 @@ def zoek_documenten(item_url: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def genereer_html(metadata: dict, output_path: Path) -> None:
-    """
-    Genereer een HTML overzicht van de metadata.
-    """
-    gemeente = metadata['gemeente']
-    datum = metadata['datum']
-    beslissingen = metadata.get('beslissingen', [])
-    publicaties = metadata.get('publicaties', [])
-    
-    html = f"""<!DOCTYPE html>
+    """Genereer een HTML overzicht van de metadata."""
+    gemeente = metadata["gemeente"]
+    datum = metadata["datum"]
+    beslissingen = metadata.get("beslissingen", [])
+    publicaties = metadata.get("publicaties", [])
+
+    def e(text: str) -> str:
+        return html.escape(str(text))
+
+    html_content = f"""<!DOCTYPE html>
 <html lang="nl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{gemeente.title()} - Deliberations.be</title>
+    <title>{e(gemeente.title())} - Deliberations.be</title>
     <style>
         * {{
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }}
-        
+
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
             line-height: 1.6;
@@ -321,7 +339,7 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             background: #f5f5f5;
             padding: 20px;
         }}
-        
+
         .container {{
             max-width: 1200px;
             margin: 0 auto;
@@ -330,7 +348,7 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             border-radius: 8px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }}
-        
+
         h1 {{
             color: #2c3e50;
             border-bottom: 3px solid #3498db;
@@ -338,7 +356,7 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             margin-bottom: 30px;
             font-size: 2.2em;
         }}
-        
+
         .meta-info {{
             background: #ecf0f1;
             padding: 20px;
@@ -348,12 +366,12 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 15px;
         }}
-        
+
         .meta-item {{
             display: flex;
             flex-direction: column;
         }}
-        
+
         .meta-label {{
             font-weight: 600;
             color: #7f8c8d;
@@ -361,13 +379,13 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }}
-        
+
         .meta-value {{
             font-size: 1.3em;
             color: #2c3e50;
             margin-top: 5px;
         }}
-        
+
         h2 {{
             color: #2c3e50;
             margin-top: 40px;
@@ -377,7 +395,7 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             align-items: center;
             gap: 10px;
         }}
-        
+
         .badge {{
             background: #3498db;
             color: white;
@@ -386,7 +404,7 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             font-size: 0.7em;
             font-weight: 600;
         }}
-        
+
         .item {{
             background: #fff;
             border: 1px solid #e0e0e0;
@@ -396,12 +414,12 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             border-radius: 4px;
             transition: all 0.2s ease;
         }}
-        
+
         .item:hover {{
             box-shadow: 0 4px 12px rgba(0,0,0,0.08);
             transform: translateY(-2px);
         }}
-        
+
         .item-title {{
             font-size: 1.15em;
             font-weight: 600;
@@ -409,24 +427,24 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             margin-bottom: 10px;
             line-height: 1.4;
         }}
-        
+
         .item-title a {{
             color: #2c3e50;
             text-decoration: none;
             transition: color 0.2s;
         }}
-        
+
         .item-title a:hover {{
             color: #3498db;
         }}
-        
+
         .item-meta {{
             display: flex;
             flex-wrap: wrap;
             gap: 15px;
             margin-top: 10px;
         }}
-        
+
         .item-meta-item {{
             display: flex;
             align-items: center;
@@ -434,33 +452,33 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             font-size: 0.9em;
             color: #7f8c8d;
         }}
-        
+
         .item-meta-item strong {{
             color: #555;
         }}
-        
+
         .status {{
             padding: 4px 10px;
             border-radius: 4px;
             font-size: 0.85em;
             font-weight: 600;
         }}
-        
+
         .status.projet {{
             background: #fff3cd;
             color: #856404;
         }}
-        
+
         .status.definitif {{
             background: #d4edda;
             color: #155724;
         }}
-        
+
         .status.unknown {{
             background: #e2e3e5;
             color: #383d41;
         }}
-        
+
         .metadata {{
             background: #f8f9fa;
             padding: 12px;
@@ -468,7 +486,7 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             margin-top: 10px;
             font-size: 0.9em;
         }}
-        
+
         .metadata-row {{
             display: grid;
             grid-template-columns: 150px 1fr;
@@ -476,27 +494,27 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             padding: 6px 0;
             border-bottom: 1px solid #e9ecef;
         }}
-        
+
         .metadata-row:last-child {{
             border-bottom: none;
         }}
-        
+
         .metadata-label {{
             font-weight: 600;
             color: #6c757d;
         }}
-        
+
         .metadata-value {{
             color: #495057;
         }}
-        
+
         .documenten {{
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
             margin-top: 12px;
         }}
-        
+
         .doc-link {{
             display: inline-flex;
             align-items: center;
@@ -510,13 +528,13 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             font-size: 0.85em;
             transition: all 0.2s;
         }}
-        
+
         .doc-link:hover {{
             background: #2980b9;
             color: #fff;
             border-color: #2980b9;
         }}
-        
+
         .footer {{
             margin-top: 50px;
             padding-top: 20px;
@@ -525,33 +543,26 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             color: #7f8c8d;
             font-size: 0.9em;
         }}
-        
+
         .empty-state {{
             text-align: center;
             padding: 60px 20px;
             color: #95a5a6;
         }}
-        
-        .empty-state svg {{
-            width: 80px;
-            height: 80px;
-            margin-bottom: 20px;
-            opacity: 0.5;
-        }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🏛️ {gemeente.title()}</h1>
-        
+        <h1>{e(gemeente.title())}</h1>
+
         <div class="meta-info">
             <div class="meta-item">
                 <span class="meta-label">Gemeente</span>
-                <span class="meta-value">{gemeente.title()}</span>
+                <span class="meta-value">{e(gemeente.title())}</span>
             </div>
             <div class="meta-item">
                 <span class="meta-label">Datum scraping</span>
-                <span class="meta-value">{datum}</span>
+                <span class="meta-value">{e(datum)}</span>
             </div>
             <div class="meta-item">
                 <span class="meta-label">Beslissingen</span>
@@ -563,20 +574,27 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
             </div>
         </div>
 """
-    
-    # Beslissingen sectie
-    if beslissingen:
-        html += f"""
-        <h2>📋 Beslissingen <span class="badge">{len(beslissingen)}</span></h2>
+
+    def _render_items_section(items: list[dict], label: str, icon: str) -> str:
+        if not items:
+            return f"""
+        <h2>{icon} {e(label)}</h2>
+        <div class="empty-state">
+            <p>Geen {e(label.lower())} gevonden</p>
+        </div>
 """
-        for item in beslissingen:
-            status_class = 'projet' if item.get('status') == 'projet' else 'definitif' if item.get('status') == 'definitif' else 'unknown'
-            status_text = item.get('status', 'onbekend').title()
-            
-            html += f"""
+        out = f"""
+        <h2>{icon} {e(label)} <span class="badge">{len(items)}</span></h2>
+"""
+        for item in items:
+            status_val = item.get("status", "")
+            status_class = "projet" if status_val == "projet" else "definitif" if status_val == "definitief" else "unknown"
+            status_text = e(status_val.title()) if status_val else "Onbekend"
+
+            out += f"""
         <div class="item">
             <div class="item-title">
-                <a href="{item['url']}" target="_blank">{item['titel']}</a>
+                <a href="{e(item['url'])}" target="_blank">{e(item['titel'])}</a>
             </div>
             <div class="item-meta">
                 <div class="item-meta-item">
@@ -584,130 +602,54 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
                 </div>
             </div>
 """
-            
-            if item.get('metadata'):
-                html += """
+            if item.get("metadata"):
+                out += """
             <div class="metadata">
 """
-                for key, value in item['metadata'].items():
+                for key, value in item["metadata"].items():
                     if value:
-                        html += f"""
+                        out += f"""
                 <div class="metadata-row">
-                    <div class="metadata-label">{key}:</div>
-                    <div class="metadata-value">{value}</div>
+                    <div class="metadata-label">{e(key)}:</div>
+                    <div class="metadata-value">{e(value)}</div>
                 </div>
 """
-                html += """
+                out += """
             </div>
 """
-            
-            if item.get('documenten'):
-                html += """
+            if item.get("documenten"):
+                out += """
             <div class="documenten">
 """
-                for doc in item['documenten']:
-                    icon = '📄' if doc.get('type') == 'pdf' else '📝'
-                    if doc.get('local_file'):
-                        html += f"""
-                <a class="doc-link" href="{doc['local_file']}">{icon} {doc['naam']}</a>
+                for doc in item["documenten"]:
+                    doc_icon = "📄" if doc.get("type") == "pdf" else "📝"
+                    href = doc.get("local_file") or doc["url"]
+                    target = "" if doc.get("local_file") else ' target="_blank"'
+                    out += f"""
+                <a class="doc-link" href="{e(href)}"{target}>{doc_icon} {e(doc['naam'])}</a>
 """
-                    else:
-                        html += f"""
-                <a class="doc-link" href="{doc['url']}" target="_blank">{icon} {doc['naam']}</a>
-"""
-                html += """
+                out += """
             </div>
 """
-            
-            html += """
+            out += """
         </div>
 """
-    else:
-        html += """
-        <h2>📋 Beslissingen</h2>
-        <div class="empty-state">
-            <p>Geen beslissingen gevonden</p>
-        </div>
-"""
-    
-    # Publicaties sectie
-    if publicaties:
-        html += f"""
-        <h2>📰 Publicaties <span class="badge">{len(publicaties)}</span></h2>
-"""
-        for item in publicaties:
-            status_class = 'projet' if item.get('status') == 'projet' else 'definitif' if item.get('status') == 'definitif' else 'unknown'
-            status_text = item.get('status', 'onbekend').title()
-            
-            html += f"""
-        <div class="item">
-            <div class="item-title">
-                <a href="{item['url']}" target="_blank">{item['titel']}</a>
-            </div>
-            <div class="item-meta">
-                <div class="item-meta-item">
-                    <span class="status {status_class}">{status_text}</span>
-                </div>
-            </div>
-"""
-            
-            if item.get('metadata'):
-                html += """
-            <div class="metadata">
-"""
-                for key, value in item['metadata'].items():
-                    if value:
-                        html += f"""
-                <div class="metadata-row">
-                    <div class="metadata-label">{key}:</div>
-                    <div class="metadata-value">{value}</div>
-                </div>
-"""
-                html += """
-            </div>
-"""
-            
-            if item.get('documenten'):
-                html += """
-            <div class="documenten">
-"""
-                for doc in item['documenten']:
-                    icon = '📄' if doc.get('type') == 'pdf' else '📝'
-                    if doc.get('local_file'):
-                        html += f"""
-                <a class="doc-link" href="{doc['local_file']}">{icon} {doc['naam']}</a>
-"""
-                    else:
-                        html += f"""
-                <a class="doc-link" href="{doc['url']}" target="_blank">{icon} {doc['naam']}</a>
-"""
-                html += """
-            </div>
-"""
-            
-            html += """
-        </div>
-"""
-    else:
-        html += """
-        <h2>📰 Publicaties</h2>
-        <div class="empty-state">
-            <p>Geen publicaties gevonden</p>
-        </div>
-"""
-    
-    # Footer
-    html += f"""
+        return out
+
+    html_content += _render_items_section(beslissingen, "Beslissingen", "📋")
+    html_content += _render_items_section(publicaties, "Publicaties", "📰")
+
+    html_content += f"""
         <div class="footer">
-            <p>Gegenereerd op {datum} • Bron: <a href="https://deliberations.be/{gemeente}" target="_blank">deliberations.be/{gemeente}</a></p>
+            <p>Gegenereerd op {e(datum)} &bull; Bron: <a href="https://deliberations.be/{e(gemeente)}" target="_blank">deliberations.be/{e(gemeente)}</a></p>
         </div>
     </div>
 </body>
 </html>
 """
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(html)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
 
 
 # ---------------------------------------------------------------------------
@@ -717,118 +659,108 @@ def genereer_html(metadata: dict, output_path: Path) -> None:
 def scrape_gemeente(
     gemeente: str,
     output_dir: Path,
-    max_items: int = 100,
+    maanden: int | None = None,
     download_pdfs: bool = True,
 ) -> tuple[int, int]:
     """
     Scrape een gemeente van deliberations.be.
-    
+
+    Args:
+        maanden: Haal items op uit de afgelopen N maanden (None = alles).
     Returns: (aantal_items, aantal_documenten)
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    print(f"\n{'='*70}")
-    print(f"  Gemeente: {gemeente}")
-    print(f"  URL: {BASE_URL}/{gemeente}")
-    print(f"  Output: {output_dir}")
-    print(f"{'='*70}\n")
-    
-    # 1. Haal beslissingen op
-    print("[1] Beslissingen ophalen...")
-    beslissingen = haal_beslissingen(gemeente, max_items)
-    print(f"    ✓ {len(beslissingen)} beslissingen gevonden")
-    
-    # 2. Haal publicaties op
-    print("\n[2] Publicaties ophalen...")
-    publicaties = haal_publicaties(gemeente, max_items)
-    print(f"    ✓ {len(publicaties)} publicaties gevonden")
-    
+
+    from dateutil.relativedelta import relativedelta
+    min_datum: date | None = None
+    if maanden:
+        min_datum = date.today() - relativedelta(months=maanden)
+
+    logger.info("Gemeente: %s — %s/%s", gemeente, BASE_URL, gemeente)
+
+    logger.info("[1] Beslissingen ophalen...")
+    beslissingen = haal_beslissingen(gemeente, min_datum)
+    logger.info("    %d beslissingen gevonden", len(beslissingen))
+
+    logger.info("[2] Publicaties ophalen...")
+    publicaties = haal_publicaties(gemeente, min_datum)
+    logger.info("    %d publicaties gevonden", len(publicaties))
+
     alle_items = beslissingen + publicaties
-    
+
     if not alle_items:
-        print("\n    [!] Geen items gevonden voor deze gemeente")
+        logger.warning("Geen items gevonden voor %s", gemeente)
         return 0, 0
-    
-    # 3. Sla metadata op als JSON
-    print("\n[3] Metadata opslaan...")
-    
+
+    logger.info("[3] Metadata opslaan...")
+
     metadata = {
-        'gemeente': gemeente,
-        'datum': date.today().isoformat(),
-        'aantal_beslissingen': len(beslissingen),
-        'aantal_publicaties': len(publicaties),
-        'beslissingen': beslissingen,
-        'publicaties': publicaties,
+        "gemeente": gemeente,
+        "datum": date.today().isoformat(),
+        "aantal_beslissingen": len(beslissingen),
+        "aantal_publicaties": len(publicaties),
+        "beslissingen": beslissingen,
+        "publicaties": publicaties,
     }
-    
-    # JSON output
+
     metadata_file = output_dir / f"{gemeente}_metadata.json"
-    with open(metadata_file, 'w', encoding='utf-8') as f:
+    with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
-    print(f"    ✓ JSON: {metadata_file.name}")
-    
-    # 4. Zoek en download documenten (PDF, Word) (indien gewenst)
+    logger.info("    JSON: %s", metadata_file.name)
+
     doc_count = 0
     if download_pdfs:
-        print(f"\n[4] Documenten zoeken (PDF, Word)...")
-        
-        for item in tqdm(alle_items[:20], desc="Items controleren"):  # Beperk tot eerste 20 voor snelheid
-            documenten = zoek_documenten(item['url'])
-            
+        logger.info("[4] Documenten zoeken (PDF, Word)...")
+
+        for item in tqdm(alle_items, desc="Items controleren"):
+            documenten = zoek_documenten(item["url"])
+
             if documenten:
-                doc_types = ', '.join(set(d['type'] for d in documenten))
-                print(f"\n    ✓ {len(documenten)} document(en) gevonden ({doc_types}): {item['titel'][:50]}")
-                
-                # Bewaar documenten in item metadata voor HTML
-                item['documenten'] = []
-                
+                doc_types = ", ".join(set(d["type"] for d in documenten))
+                logger.info("    %d document(en) gevonden (%s): %s", len(documenten), doc_types, item["titel"][:50])
+
+                item["documenten"] = []
+
                 for doc in documenten:
-                    # Download document (PDF of Word)
                     if SESSION and _config:
-                        # Voor Word documenten, require_pdf=False
-                        require_pdf = (doc['type'] == 'pdf')
-                        
+                        require_pdf = (doc["type"] == "pdf")
+
                         result = download_document(
                             SESSION,
                             _config,
-                            doc['url'],
+                            doc["url"],
                             output_dir,
-                            doc['naam'],
+                            doc["naam"],
                             require_pdf=require_pdf,
                         )
-                        
+
                         if result.success and not result.skipped:
                             doc_count += 1
-                            doc_type_label = doc['type'].upper()
-                            print(f"      → [{doc_type_label}] {result.path.name}")
-                            # Voeg lokaal bestand toe
-                            item['documenten'].append({
-                                'naam': doc['naam'],
-                                'url': doc['url'],
-                                'local_file': result.path.name,
-                                'type': doc['type']
+                            logger.info("      [%s] %s", doc["type"].upper(), result.path.name)
+                            item["documenten"].append({
+                                "naam": doc["naam"],
+                                "url": doc["url"],
+                                "local_file": result.path.name,
+                                "type": doc["type"],
                             })
                         else:
-                            # Voeg zonder lokaal bestand toe
-                            item['documenten'].append({
-                                'naam': doc['naam'],
-                                'url': doc['url'],
-                                'local_file': None,
-                                'type': doc['type']
+                            item["documenten"].append({
+                                "naam": doc["naam"],
+                                "url": doc["url"],
+                                "local_file": None,
+                                "type": doc["type"],
                             })
-        
+
         if doc_count == 0:
-            print("    ⚠ Geen documenten gevonden/gedownload")
-    
-    # 5. Update metadata en genereer HTML na documenten
-    with open(metadata_file, 'w', encoding='utf-8') as f:
+            logger.warning("Geen documenten gevonden/gedownload voor %s", gemeente)
+
+    with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
-    
-    # HTML output
+
     html_file = output_dir / f"{gemeente}.html"
     genereer_html(metadata, html_file)
-    print(f"\n    ✓ HTML: {html_file.name}")
-    
+    logger.info("    HTML: %s", html_file.name)
+
     return len(alle_items), doc_count
 
 
@@ -855,7 +787,6 @@ Voorbeelden:
         """,
     )
 
-    # ── Standaard interface (scraper_groep.py / start.py compatibel) ────────
     parser.add_argument("--base-url", type=str,
                         help="Volledige gemeente-URL (bijv. https://deliberations.be/liege)")
     parser.add_argument("--orgaan", type=str,
@@ -871,7 +802,6 @@ Voorbeelden:
     parser.add_argument("--zichtbaar", action="store_true",
                         help="Browser zichtbaar — deliberations.be gebruikt geen browser")
 
-    # ── Eigen interface ──────────────────────────────────────────────────────
     parser.add_argument("--gemeente", "-g", type=str,
                         help="Gemeente-slug (bijv. liege); gebruik --lijst voor opties")
     parser.add_argument("--alle", action="store_true",
@@ -880,103 +810,78 @@ Voorbeelden:
                         help="Toon lijst van beschikbare gemeenten")
     parser.add_argument("--output-dir", "-o", type=str, default="pdfs",
                         help="Output directory (standaard: pdfs)")
-    parser.add_argument("--max-items", "-n", type=int, default=100,
-                        help="Maximum aantal items per gemeente (standaard: 100)")
     parser.add_argument("--no-pdfs", action="store_true",
                         help="Sla alleen metadata op, geen documenten downloaden")
 
     args = parser.parse_args()
 
-    # ── Standaard-args vertalen naar eigen args ──────────────────────────────
-    # --base-url https://deliberations.be/liege  →  --gemeente liege
     if args.base_url and not args.gemeente:
         slug = urlparse(args.base_url).path.strip("/").split("/")[0]
         if slug:
             args.gemeente = slug
 
-    # --output pad  →  --output-dir pad (alleen als niet al opgegeven)
     if args.output and args.output_dir == "pdfs":
         args.output_dir = args.output
 
-    # --maanden N  →  max_items (ruwe schatting: ~8 items/maand)
-    if args.maanden is not None and args.max_items == 100:
-        args.max_items = max(50, args.maanden * 8)
-
-    # --alle met --base-url = "alle organen van die gemeente" = gewoon scrapen
-    # --alle zonder --base-url = alle deliberations-gemeenten (origineel gedrag)
-
     init_session()
 
-    # ── Lijst tonen ──────────────────────────────────────────────────────────
     if args.lijst:
-        print("\n📋 Deliberations.be gemeenten (uit simba-source.csv):\n")
         gemeenten = haal_gemeenten_lijst()
         if not gemeenten:
-            print("   [!] Geen gemeenten gevonden in CSV")
-            print("   Tip: Zorg dat simba-source.csv bestaat met deliberations.be URLs")
+            logger.error("Geen gemeenten gevonden in CSV")
             return
         for i, gemeente in enumerate(gemeenten, 1):
             print(f"  {i:3}. {gemeente}")
         print(f"\n   Totaal: {len(gemeenten)} gemeenten")
         return
 
-    # ── Validatie ────────────────────────────────────────────────────────────
     if not args.gemeente and not args.alle:
-        print("❌ Geef --gemeente, --base-url of --alle op (gebruik --lijst voor opties)")
+        logger.error("Geef --gemeente, --base-url of --alle op (gebruik --lijst voor opties)")
         sys.exit(1)
 
     output_dir = Path(args.output_dir)
     download_pdfs = not args.no_pdfs
+    maanden = args.maanden
 
-    # ── Enkele gemeente ──────────────────────────────────────────────────────
     if args.gemeente:
         totaal_items, totaal_docs = scrape_gemeente(
             args.gemeente,
             output_dir / args.gemeente,
-            args.max_items,
+            maanden,
             download_pdfs,
         )
-        print(f"\n{'='*70}")
-        print(f"  ✅ Klaar!")
-        print(f"  Items verzameld: {totaal_items}")
-        print(f"  Documenten gedownload: {totaal_docs}")
-        print(f"{'='*70}")
+        logger.info("Klaar — items: %d, documenten: %d", totaal_items, totaal_docs)
         return
 
-    # ── Alle gemeenten ───────────────────────────────────────────────────────
     if args.alle:
         gemeenten = haal_gemeenten_lijst()
         if not gemeenten:
-            print("❌ Geen gemeenten gevonden in simba-source.csv")
+            logger.error("Geen gemeenten gevonden in simba-source.csv")
             sys.exit(1)
-        
-        print(f"\n🚀 Scraping {len(gemeenten)} gemeenten...\n")
-        
+
+        logger.info("Scraping %d gemeenten...", len(gemeenten))
+
         totaal_items = 0
         totaal_docs = 0
-        
+
         for i, gemeente in enumerate(gemeenten, 1):
-            print(f"\n[{i}/{len(gemeenten)}] {gemeente}")
+            logger.info("[%d/%d] %s", i, len(gemeenten), gemeente)
             items, docs = scrape_gemeente(
                 gemeente,
                 output_dir / gemeente,
-                args.max_items,
+                maanden,
                 download_pdfs,
             )
             totaal_items += items
             totaal_docs += docs
-            
-            # Wacht even tussen gemeenten
+
             if i < len(gemeenten):
                 time.sleep(1)
-        
-        print(f"\n{'='*70}")
-        print(f"  ✅ ALLE GEMEENTEN KLAAR!")
-        print(f"  Gemeenten: {len(gemeenten)}")
-        print(f"  Totaal items: {totaal_items}")
-        print(f"  Totaal documenten: {totaal_docs}")
-        print(f"  Output: {output_dir.resolve()}")
-        print(f"{'='*70}")
+
+        logger.info(
+            "Alle gemeenten klaar — %d gemeenten, %d items, %d documenten — output: %s",
+            len(gemeenten), totaal_items, totaal_docs, output_dir.resolve(),
+        )
 
 
 if __name__ == "__main__":

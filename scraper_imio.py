@@ -212,6 +212,71 @@ GEMEENTEN: dict[str, dict] = {
         "listing_pad": "/ma-commune/vie-politique/conseil-communal/ordre-du-jour-proces-verbaux/comptes-rendus",
         "ajax_load": True,
     },
+    "www.bouillon.be": {
+        "naam": "Bouillon",
+        # Alle PV's op één pagina (Structuur B); datum via bestandsnaam (YYYYMMDD/YYYY-MM-DD)
+        "listing_pad": "/ma-commune/vie-politique/proces-verbal",
+    },
+    "www.ciney.be": {
+        "naam": "Ciney",
+        # Structuur A: jaar-subpagina's (2025, 2024, ...); datum via linktekst (French month)
+        "listing_pad": "/vie-communale/vie-politique/conseil-communal/proces-verbaux",
+    },
+    "www.donceel.be": {
+        "naam": "Donceel",
+        # Structuur B: alles op één pagina (Bootstrap tabs per jaar); lege linkteksten,
+        # datum via bestandsnaam (Frans, YYYYMMDD, YYYY-MM-DD). Sommige bestanden
+        # hebben identieke namen over jaren heen — alleen eerste wordt gedownload.
+        "listing_pad": "/conseil-communal",
+    },
+    "www.villers-la-ville.be": {
+        "naam": "Villers-la-Ville",
+        # Structuur B: alles op één pagina; datum via linktekst (French month)
+        "listing_pad": "/administration/vie-politique/conseil/compte-rendu-du-conseil-communal",
+    },
+    "www.beaumont.be": {
+        "naam": "Beaumont",
+        # Structuur B; lege linkteksten, datum via bestandsnaam (DDMMYYYY met underscores)
+        "listing_pad": "/P-V-des-conseils-communaux",
+    },
+    "www.cerfontaine.be": {
+        "naam": "Cerfontaine",
+        # Structuur B; datum via linktekst (French month); bevat ook niet-PV docs (PST, ROI)
+        "listing_pad": "/ma-commune/politique/le-conseil-communal/pv-approuves-des-dernieres-seances-du-conseil-communal",
+    },
+    "www.ecaussinnes.be": {
+        "naam": "Ecaussinnes",
+        # Structuur A: jaar-subpagina's; Plone /view-suffix; datum via linktekst
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux",
+        "ajax_load": True,
+    },
+    "www.estaimpuis.be": {
+        "naam": "Estaimpuis",
+        # Structuur B; WordPress; datum via bestandsnaam (YYYY-MM-DD met koppeltekens)
+        "listing_pad": "/pv-du-conseil-communal/",
+    },
+    "www.frasnes-lez-anvaing.be": {
+        "naam": "Frasnes-lez-Anvaing",
+        # Structuur B; Plone; multi-part PVs (partie 1/2/3); datum via bestandsnaam
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/resumes-du-conseil-communal-1",
+        "ajax_load": True,
+    },
+    "www.onhaye.be": {
+        "naam": "Onhaye",
+        # Structuur B; Plone; 134 PDFs; datum via linktekst (French month)
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux-des-assemblees",
+    },
+    "www.saint-hubert.be": {
+        "naam": "Saint-Hubert",
+        # Structuur B; custom CMS (LayerSlider); datum via linktekst (French month)
+        "listing_pad": "/pv/",
+    },
+    "www.sivry-rance.be": {
+        "naam": "Sivry-Rance",
+        # Structuur A: jaar-subpagina's; Plone; lege linkteksten, datum via bestandsnaam
+        "listing_pad": "/ma-commune/vie-politique/copy_of_proces-verbaux-des-conseils-communaux",
+        "ajax_load": True,
+    },
 }
 
 
@@ -301,7 +366,10 @@ def _datum_uit_pad(pad: str) -> date | None:
             except ValueError:
                 pass
 
-    return None
+    # Fallback: Franse maandnaam in de bestandsnaam zelf
+    # (bijv. "Seance publique 27 JANVIER 2022", "Proces-verbal-02-mars-2026-18-00")
+    # Vervang koppeltekens/underscores door spaties zodat de regex matcht.
+    return _datum_uit_tekst(naam.replace("_", " ").replace("-", " "))
 
 
 # ---------------------------------------------------------------------------

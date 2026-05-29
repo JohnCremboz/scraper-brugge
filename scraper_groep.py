@@ -328,7 +328,10 @@ _IMIO_HOSTS: frozenset[str] = frozenset({
     "www.philippeville.be", "www.quaregnon.be", "www.saint-ghislain.be",
     "www.thimister-clermont.be", "www.thuin.be", "www.wasseiges.be",
     "www.clavier.be", "www.braine-lalleud.be", "www.villedefontaine.be",
-    "www.lahulpe.be", "www.manage-commune.be",
+    "www.lahulpe.be", "www.manage-commune.be", "www.bouillon.be", "www.ciney.be",
+    "www.donceel.be", "www.villers-la-ville.be",
+    "www.beaumont.be", "www.cerfontaine.be", "www.ecaussinnes.be", "www.estaimpuis.be",
+    "www.onhaye.be", "www.saint-hubert.be", "www.sivry-rance.be",
 })
 
 # Waalse WordPress/Plone-gemeenten — scraper_wordpress.py via hostname
