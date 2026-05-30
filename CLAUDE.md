@@ -72,6 +72,7 @@ uv run python scraper_groep.py --toon-groepen
 - **WordPress 403:** many sites block HEAD/GET from health_check but scrapers work with proper User-Agent + session
 - **LBLOD 403:** scrapers work; `health_check.py` treats 403 as acceptable for LBLOD (`_TYPE_VERWACHT_403`)
 - **Deliberations.be:** HEAD returns 404 but GET returns 200 (Plone/Zope behaviour); health_check falls back to GET
+- **Publicatiemodellen:** twee types — (1) volledig document per vergadering (notulen/PV als PDF) of (2) beslissing per beslissing (Vlaams: **uittreksels**; Frans: délibérations/décisions). Beide zijn nuttige output. "Geen PV-PDF" ≠ "geen data" — gemeente gebruikt dan model 2. Deliberations.be gebruikt bijna altijd model 2 (uittreksels), enkel Mons en Seneffe hebben volledige PV-PDFs op delib.be.
 - **Herstappe:** only blocked municipality (DNS failure, ~85 residents, no working website)
 - **Windows:** set `$env:PYTHONIOENCODING = "utf-8"` if terminal shows encoding errors
 

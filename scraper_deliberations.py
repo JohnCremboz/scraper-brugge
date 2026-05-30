@@ -1,36 +1,25 @@
 """
-Scraper voor deliberations.be - Metadata van gemeentelijke beslissingen.
+Scraper voor deliberations.be - beslissingen en publicaties.
 
-deliberations.be is een transparantieplatform van iMio (Plone CMS) dat door
-~181 Waalse gemeenten wordt gebruikt voor het publiceren van gemeenteraads-
-beslissingen en publicaties.
+deliberations.be is een transparantieplatform van iMio (Plone CMS) voor ~167
+Waalse gemeenten. Publicatiemodel: beslissing per beslissing (uittreksels),
+niet als volledig PV-document. Uitzondering: Mons en Seneffe hebben volledige PV-PDFs.
 
-BELANGRIJKE OPMERKING:
-Op dit moment (maart 2026) bevat deliberations.be voornamelijk METADATA
-van beslissingen zonder consistente PDF bijlagen. De scraper verzamelt:
-- Beslissingstities en beschrijvingen
-- Vergaderdata
-- Statussen (projet/definitief)
-- Links naar externe documenten (waar beschikbaar)
+Twee types content:
+- /decisions: beslissingstekst per agendapunt (HTML, zelden PDF-bijlage)
+- /publications: officieel gepubliceerde documenten (arrêtés, règlements,
+  uittreksels) — PDFs via JS-rendered @@download links (Playwright vereist)
 
-Output formaten:
-- JSON: Gestructureerde data voor verdere verwerking
-- HTML: Visueel overzicht met modern design
-
-Structuur:
-    https://deliberations.be/{gemeente}/decisions          → beslissingen overzicht
-    https://deliberations.be/{gemeente}/decisions/@@faceted_query  → items ophalen
-    https://deliberations.be/{gemeente}/publications       → publicaties
+Output: PDF-bestanden + JSON-metadata (geen HTML).
 
 Gebruik:
     python scraper_deliberations.py --gemeente liege
-    python scraper_deliberations.py --alle --no-pdfs
-    python scraper_deliberations.py --lijst  # Lijst alle 178 gemeenten
+    python scraper_deliberations.py --alle
+    python scraper_deliberations.py --lijst
 """
 
 import argparse
 import csv
-import html
 import json
 import sys
 import time
@@ -40,6 +29,7 @@ from urllib.parse import urljoin, urlencode, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from tqdm import tqdm
 
 from base_scraper import (
@@ -245,20 +235,42 @@ def haal_publicaties(gemeente: str, min_datum: date | None = None) -> list[dict]
 # Zoek documenten op item pagina
 # ---------------------------------------------------------------------------
 
-def zoek_documenten(item_url: str) -> list[dict]:
-    """
-    Zoek documenten (PDF, Word) op een item detail pagina.
+_playwright_browser = None
 
-    Returns lijst van {url, naam, type} dicts.
-    """
-    resp = _get(item_url)
-    if resp is None:
-        return []
-    if not resp.text.strip():
-        logger.warning("Lege HTML-respons op item-pagina: %s", item_url)
-        return []
 
-    soup = BeautifulSoup(resp.text, "lxml")
+def _verwerk_item_pagina(
+    url: str,
+    fallback_pdf_path: "Path | None" = None,
+) -> "tuple[list[dict], bool]":
+    """
+    Open item pagina, zoek PDF/Word-documenten (@@download links, JS-rendered).
+    Als geen gevonden en fallback_pdf_path opgegeven: sla pagina op als PDF.
+    Returns: (documenten, pdf_gegenereerd)
+    """
+    global _playwright_browser
+    page = None
+    try:
+        page = _playwright_browser.new_page()
+        page.goto(url, wait_until="networkidle", timeout=20000)
+        html = page.content()
+    except PlaywrightTimeout:
+        logger.warning("Playwright timeout: %s", url)
+        if page:
+            try:
+                page.close()
+            except Exception:
+                pass
+        return [], False
+    except Exception as exc:
+        logger.warning("Playwright fout op %s: %s", url, exc)
+        if page:
+            try:
+                page.close()
+            except Exception:
+                pass
+        return [], False
+
+    soup = BeautifulSoup(html, "lxml")
     documenten = []
     seen_base_urls: set[str] = set()
 
@@ -268,389 +280,61 @@ def zoek_documenten(item_url: str) -> list[dict]:
         href_lower = href.lower()
 
         doc_type = None
-
         if ".pdf" in href_lower:
             doc_type = "pdf"
-        elif ".docx" in href_lower:
+        elif ".docx" in href_lower or ".doc" in href_lower:
             doc_type = "word"
-        elif ".doc" in href_lower:
-            doc_type = "word"
-        elif "download" in href_lower:
-            doc_type = "unknown"
+        elif "@@download" in href_lower:
+            doc_type = "pdf"
 
         if not doc_type:
             continue
 
-        full_url = urljoin(item_url, href)
-
-        # Plone serves each file at both a direct URL and a @@download/file/ URL.
-        # The @@download variant appends the filename again, causing double extensions
-        # (e.g. foo.pdf/@@download/file/foo.pdf.pdf). Deduplicate by base object URL.
+        full_url = urljoin(url, href)
         base_url = full_url.split("/@@download/")[0] if "/@@download/" in full_url else full_url
         if base_url in seen_base_urls:
             continue
         seen_base_urls.add(base_url)
 
-        # Prefer link text; fall back to filename from URL path (use base, not @@download path)
         if not text:
             url_path = urlparse(base_url).path
             text = url_path.rstrip("/").split("/")[-1] or "document"
 
-        documenten.append({
-            "url": full_url,
-            "naam": text,
-            "type": doc_type,
-        })
+        documenten.append({"url": full_url, "naam": text, "type": doc_type})
 
-    return documenten
+    pdf_gegenereerd = False
+    if not documenten and fallback_pdf_path is not None and not fallback_pdf_path.exists():
+        try:
+            fallback_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+            page.pdf(path=str(fallback_pdf_path), format="A4")
+            pdf_gegenereerd = True
+        except Exception as exc:
+            logger.warning("HTML→PDF mislukt voor %s: %s", url, exc)
+
+    try:
+        page.close()
+    except Exception:
+        pass
+
+    return documenten, pdf_gegenereerd
 
 
-# ---------------------------------------------------------------------------
-# HTML Output Generator
-# ---------------------------------------------------------------------------
+def zoek_documenten(item_url: str) -> list[dict]:
+    """Zoek documenten (PDF) op een item detail pagina via Playwright."""
+    docs, _ = _verwerk_item_pagina(item_url)
+    return docs
 
-def genereer_html(metadata: dict, output_path: Path) -> None:
-    """Genereer een HTML overzicht van de metadata."""
-    gemeente = metadata["gemeente"]
-    datum = metadata["datum"]
-    beslissingen = metadata.get("beslissingen", [])
-    publicaties = metadata.get("publicaties", [])
 
-    def e(text: str) -> str:
-        return html.escape(str(text))
-
-    html_content = f"""<!DOCTYPE html>
-<html lang="nl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{e(gemeente.title())} - Deliberations.be</title>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background: #f5f5f5;
-            padding: 20px;
-        }}
-
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            padding: 40px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }}
-
-        h1 {{
-            color: #2c3e50;
-            border-bottom: 3px solid #3498db;
-            padding-bottom: 15px;
-            margin-bottom: 30px;
-            font-size: 2.2em;
-        }}
-
-        .meta-info {{
-            background: #ecf0f1;
-            padding: 20px;
-            border-radius: 6px;
-            margin-bottom: 30px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 15px;
-        }}
-
-        .meta-item {{
-            display: flex;
-            flex-direction: column;
-        }}
-
-        .meta-label {{
-            font-weight: 600;
-            color: #7f8c8d;
-            font-size: 0.9em;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }}
-
-        .meta-value {{
-            font-size: 1.3em;
-            color: #2c3e50;
-            margin-top: 5px;
-        }}
-
-        h2 {{
-            color: #2c3e50;
-            margin-top: 40px;
-            margin-bottom: 20px;
-            font-size: 1.8em;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }}
-
-        .badge {{
-            background: #3498db;
-            color: white;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.7em;
-            font-weight: 600;
-        }}
-
-        .item {{
-            background: #fff;
-            border: 1px solid #e0e0e0;
-            border-left: 4px solid #3498db;
-            padding: 20px;
-            margin-bottom: 15px;
-            border-radius: 4px;
-            transition: all 0.2s ease;
-        }}
-
-        .item:hover {{
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-            transform: translateY(-2px);
-        }}
-
-        .item-title {{
-            font-size: 1.15em;
-            font-weight: 600;
-            color: #2c3e50;
-            margin-bottom: 10px;
-            line-height: 1.4;
-        }}
-
-        .item-title a {{
-            color: #2c3e50;
-            text-decoration: none;
-            transition: color 0.2s;
-        }}
-
-        .item-title a:hover {{
-            color: #3498db;
-        }}
-
-        .item-meta {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin-top: 10px;
-        }}
-
-        .item-meta-item {{
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 0.9em;
-            color: #7f8c8d;
-        }}
-
-        .item-meta-item strong {{
-            color: #555;
-        }}
-
-        .status {{
-            padding: 4px 10px;
-            border-radius: 4px;
-            font-size: 0.85em;
-            font-weight: 600;
-        }}
-
-        .status.projet {{
-            background: #fff3cd;
-            color: #856404;
-        }}
-
-        .status.definitif {{
-            background: #d4edda;
-            color: #155724;
-        }}
-
-        .status.unknown {{
-            background: #e2e3e5;
-            color: #383d41;
-        }}
-
-        .metadata {{
-            background: #f8f9fa;
-            padding: 12px;
-            border-radius: 4px;
-            margin-top: 10px;
-            font-size: 0.9em;
-        }}
-
-        .metadata-row {{
-            display: grid;
-            grid-template-columns: 150px 1fr;
-            gap: 10px;
-            padding: 6px 0;
-            border-bottom: 1px solid #e9ecef;
-        }}
-
-        .metadata-row:last-child {{
-            border-bottom: none;
-        }}
-
-        .metadata-label {{
-            font-weight: 600;
-            color: #6c757d;
-        }}
-
-        .metadata-value {{
-            color: #495057;
-        }}
-
-        .documenten {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 12px;
-        }}
-
-        .doc-link {{
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            padding: 5px 12px;
-            background: #e8f4fd;
-            color: #2980b9;
-            border: 1px solid #bee3f8;
-            border-radius: 20px;
-            text-decoration: none;
-            font-size: 0.85em;
-            transition: all 0.2s;
-        }}
-
-        .doc-link:hover {{
-            background: #2980b9;
-            color: #fff;
-            border-color: #2980b9;
-        }}
-
-        .footer {{
-            margin-top: 50px;
-            padding-top: 20px;
-            border-top: 1px solid #e0e0e0;
-            text-align: center;
-            color: #7f8c8d;
-            font-size: 0.9em;
-        }}
-
-        .empty-state {{
-            text-align: center;
-            padding: 60px 20px;
-            color: #95a5a6;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>{e(gemeente.title())}</h1>
-
-        <div class="meta-info">
-            <div class="meta-item">
-                <span class="meta-label">Gemeente</span>
-                <span class="meta-value">{e(gemeente.title())}</span>
-            </div>
-            <div class="meta-item">
-                <span class="meta-label">Datum scraping</span>
-                <span class="meta-value">{e(datum)}</span>
-            </div>
-            <div class="meta-item">
-                <span class="meta-label">Beslissingen</span>
-                <span class="meta-value">{len(beslissingen)}</span>
-            </div>
-            <div class="meta-item">
-                <span class="meta-label">Publicaties</span>
-                <span class="meta-value">{len(publicaties)}</span>
-            </div>
-        </div>
-"""
-
-    def _render_items_section(items: list[dict], label: str, icon: str) -> str:
-        if not items:
-            return f"""
-        <h2>{icon} {e(label)}</h2>
-        <div class="empty-state">
-            <p>Geen {e(label.lower())} gevonden</p>
-        </div>
-"""
-        out = f"""
-        <h2>{icon} {e(label)} <span class="badge">{len(items)}</span></h2>
-"""
-        for item in items:
-            status_val = item.get("status", "")
-            status_class = "projet" if status_val == "projet" else "definitif" if status_val == "definitief" else "unknown"
-            status_text = e(status_val.title()) if status_val else "Onbekend"
-
-            out += f"""
-        <div class="item">
-            <div class="item-title">
-                <a href="{e(item['url'])}" target="_blank">{e(item['titel'])}</a>
-            </div>
-            <div class="item-meta">
-                <div class="item-meta-item">
-                    <span class="status {status_class}">{status_text}</span>
-                </div>
-            </div>
-"""
-            if item.get("metadata"):
-                out += """
-            <div class="metadata">
-"""
-                for key, value in item["metadata"].items():
-                    if value:
-                        out += f"""
-                <div class="metadata-row">
-                    <div class="metadata-label">{e(key)}:</div>
-                    <div class="metadata-value">{e(value)}</div>
-                </div>
-"""
-                out += """
-            </div>
-"""
-            if item.get("documenten"):
-                out += """
-            <div class="documenten">
-"""
-                for doc in item["documenten"]:
-                    doc_icon = "📄" if doc.get("type") == "pdf" else "📝"
-                    href = doc.get("local_file") or doc["url"]
-                    target = "" if doc.get("local_file") else ' target="_blank"'
-                    out += f"""
-                <a class="doc-link" href="{e(href)}"{target}>{doc_icon} {e(doc['naam'])}</a>
-"""
-                out += """
-            </div>
-"""
-            out += """
-        </div>
-"""
-        return out
-
-    html_content += _render_items_section(beslissingen, "Beslissingen", "📋")
-    html_content += _render_items_section(publicaties, "Publicaties", "📰")
-
-    html_content += f"""
-        <div class="footer">
-            <p>Gegenereerd op {e(datum)} &bull; Bron: <a href="https://deliberations.be/{e(gemeente)}" target="_blank">deliberations.be/{e(gemeente)}</a></p>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
-
+def _bouw_fallback_pdf_pad(output_dir: "Path", item: dict) -> "Path":
+    """Bouw output pad voor HTML→PDF fallback: {output_dir}/{datum}/{nr:03d}_{titel}.pdf"""
+    datum = item.get("datum") or "onbekend"
+    punt_nr_str = (item.get("metadata") or {}).get("Numéro du point", "0")
+    try:
+        punt_nr = int(punt_nr_str)
+    except (ValueError, TypeError):
+        punt_nr = 0
+    titel = sanitize_filename(item["titel"][:80])
+    return output_dir / datum / f"{punt_nr:03d}_{titel}.pdf"
 
 # ---------------------------------------------------------------------------
 # Hoofdlogica - Scrape gemeente
@@ -661,14 +345,18 @@ def scrape_gemeente(
     output_dir: Path,
     maanden: int | None = None,
     download_pdfs: bool = True,
+    html_naar_pdf: bool = True,
 ) -> tuple[int, int]:
     """
     Scrape een gemeente van deliberations.be.
 
     Args:
         maanden: Haal items op uit de afgelopen N maanden (None = alles).
+        html_naar_pdf: Als True, genereer PDF van HTML voor beslissingen zonder bijlage.
     Returns: (aantal_items, aantal_documenten)
     """
+    global _playwright_browser
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     from dateutil.relativedelta import relativedelta
@@ -692,8 +380,6 @@ def scrape_gemeente(
         logger.warning("Geen items gevonden voor %s", gemeente)
         return 0, 0
 
-    logger.info("[3] Metadata opslaan...")
-
     metadata = {
         "gemeente": gemeente,
         "datum": date.today().isoformat(),
@@ -704,62 +390,63 @@ def scrape_gemeente(
     }
 
     metadata_file = output_dir / f"{gemeente}_metadata.json"
-    with open(metadata_file, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2, ensure_ascii=False)
-    logger.info("    JSON: %s", metadata_file.name)
 
     doc_count = 0
     if download_pdfs:
-        logger.info("[4] Documenten zoeken (PDF, Word)...")
+        logger.info("[3] Documenten zoeken via Playwright...")
 
-        for item in tqdm(alle_items, desc="Items controleren"):
-            documenten = zoek_documenten(item["url"])
+        pw_ctx = sync_playwright().start()
+        _playwright_browser = pw_ctx.chromium.launch(headless=True)
 
-            if documenten:
-                doc_types = ", ".join(set(d["type"] for d in documenten))
-                logger.info("    %d document(en) gevonden (%s): %s", len(documenten), doc_types, item["titel"][:50])
+        try:
+            for item in tqdm(alle_items, desc="Items controleren"):
+                fallback_path = (
+                    _bouw_fallback_pdf_pad(output_dir, item) if html_naar_pdf else None
+                )
+                documenten, pdf_gegenereerd = _verwerk_item_pagina(item["url"], fallback_path)
 
-                item["documenten"] = []
+                if pdf_gegenereerd:
+                    doc_count += 1
+                    logger.info("      [HTML→PDF] %s", fallback_path.name)
+                    item["documenten"] = [{
+                        "naam": fallback_path.name,
+                        "url": item["url"],
+                        "local_file": str(fallback_path),
+                        "type": "html-pdf",
+                    }]
+                elif documenten:
+                    doc_types = ", ".join(set(d["type"] for d in documenten))
+                    logger.info("    %d document(en) gevonden (%s): %s",
+                                len(documenten), doc_types, item["titel"][:50])
+                    item["documenten"] = []
 
-                for doc in documenten:
-                    if SESSION and _config:
-                        require_pdf = (doc["type"] == "pdf")
-
-                        result = download_document(
-                            SESSION,
-                            _config,
-                            doc["url"],
-                            output_dir,
-                            doc["naam"],
-                            require_pdf=require_pdf,
-                        )
-
-                        if result.success and not result.skipped:
-                            doc_count += 1
-                            logger.info("      [%s] %s", doc["type"].upper(), result.path.name)
+                    for doc in documenten:
+                        if SESSION and _config:
+                            result = download_document(
+                                SESSION, _config,
+                                doc["url"], output_dir, doc["naam"],
+                                require_pdf=(doc["type"] == "pdf"),
+                            )
+                            if result.success and not result.skipped:
+                                doc_count += 1
+                                logger.info("      [%s] %s", doc["type"].upper(), result.path.name)
                             item["documenten"].append({
                                 "naam": doc["naam"],
                                 "url": doc["url"],
-                                "local_file": result.path.name,
+                                "local_file": result.path.name if result.success else None,
                                 "type": doc["type"],
                             })
-                        else:
-                            item["documenten"].append({
-                                "naam": doc["naam"],
-                                "url": doc["url"],
-                                "local_file": None,
-                                "type": doc["type"],
-                            })
+        finally:
+            _playwright_browser.close()
+            pw_ctx.stop()
+            _playwright_browser = None
 
         if doc_count == 0:
             logger.warning("Geen documenten gevonden/gedownload voor %s", gemeente)
 
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
-
-    html_file = output_dir / f"{gemeente}.html"
-    genereer_html(metadata, html_file)
-    logger.info("    HTML: %s", html_file.name)
+    logger.info("    JSON: %s", metadata_file.name)
 
     return len(alle_items), doc_count
 
@@ -812,6 +499,8 @@ Voorbeelden:
                         help="Output directory (standaard: pdfs)")
     parser.add_argument("--no-pdfs", action="store_true",
                         help="Sla alleen metadata op, geen documenten downloaden")
+    parser.add_argument("--no-html-pdf", action="store_true",
+                        help="Geen PDF genereren van HTML als er geen bijlage gevonden wordt")
 
     args = parser.parse_args()
 
@@ -841,6 +530,7 @@ Voorbeelden:
 
     output_dir = Path(args.output_dir)
     download_pdfs = not args.no_pdfs
+    html_naar_pdf = not args.no_html_pdf
     maanden = args.maanden
 
     if args.gemeente:
@@ -849,6 +539,7 @@ Voorbeelden:
             output_dir / args.gemeente,
             maanden,
             download_pdfs,
+            html_naar_pdf,
         )
         logger.info("Klaar — items: %d, documenten: %d", totaal_items, totaal_docs)
         return
@@ -871,6 +562,7 @@ Voorbeelden:
                 output_dir / gemeente,
                 maanden,
                 download_pdfs,
+                html_naar_pdf,
             )
             totaal_items += items
             totaal_docs += docs

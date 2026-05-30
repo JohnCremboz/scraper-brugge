@@ -7,7 +7,7 @@ Ondersteunde gemeenten:
   Bernissart, Floreffe, La Louvière, Waterloo, Fernelmont, Chièvres,
   Verlaine, Fosses-la-Ville, Brugelette, Pecq, Herbeumont, Rumes,
   Antoing, Ans, Crisnée, Gesves, Mont-de-l'Enclus, Orp-Jauche, Trooz, Vaux-sur-Sûre,
-  Hastière
+  Hastière, Marchin
 
 URL-patroon in simba-source.csv: */wp-content/uploads* of www.st.vith.be of */app/uploads* of */fileadmin/gemeinde_amel* of */pv-et-resumes-du-conseil* of hostname in _WAALSE_WP_HOSTS
 
@@ -20,6 +20,8 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import base64
+import json
 import re
 import sys
 from datetime import date, timedelta
@@ -93,6 +95,7 @@ _TROOZ_PDF_RE = re.compile(
     r"/ma-commune/vie-politique/fichier/proces-verbaux/\d{4}/[^/]+/.*\.pdf",
     re.IGNORECASE,
 )
+_WPPDFEMB_DATA_RE = re.compile(r"pdfemb-data=([A-Za-z0-9+/=]+)")
 
 # Franse maandnamen → maandnummer
 _FR_MAANDEN: dict[str, int] = {
@@ -363,6 +366,12 @@ GEMEENTEN: dict[str, dict] = {
         ],
         "datum_in_tekst": True,  # linktekst = "23 janvier 2026" (Frans maandnaam)
     },
+    "www.marchin.be": {
+        "naam": "Marchin",
+        "listing_pad": "/bienvenue-a-marchin/conseil-communal/pv-du-conseil-communal/",
+        "wppdfemb": True,       # PDF ingebed via wppdfemb iframe met base64-encoded JSON
+        "post_re": r"https://marchin\.be/pv-[^/]+/",
+    },
 }
 
 
@@ -394,6 +403,77 @@ def init_session(base_url: str, ssl_verify: bool = True) -> None:
 
 def _get(url: str):
     return rate_limited_get(SESSION, url, _config)
+
+
+def _scrape_wppdfemb(config: dict, output_dir: Path, maanden: int) -> tuple[int, int]:
+    """Scrape WordPress sites met wppdfemb plugin (iframe PDF-embedding via base64 JSON)."""
+    grensdatum = date.today() - timedelta(days=maanden * 31)
+    naam = config["naam"]
+    gem_dir = output_dir / sanitize_filename(naam)
+    gem_dir.mkdir(parents=True, exist_ok=True)
+
+    listing_url = _absolute(config["listing_pad"])
+    post_re = re.compile(config["post_re"])
+
+    resp = _get(listing_url)
+    if not resp or resp.status_code != 200:
+        logger.warning("Listing niet bereikbaar: %s", listing_url)
+        return 0, 0
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    post_urls: list[str] = []
+    gezien_posts: set[str] = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if post_re.search(href) and href not in gezien_posts:
+            gezien_posts.add(href)
+            post_urls.append(href)
+
+    logger.info("▶  %s  (%d post-links, grensdatum=%s)", naam, len(post_urls), grensdatum)
+
+    alle_pdfs: list[dict] = []
+    for post_url in post_urls:
+        r = _get(post_url)
+        if not r or r.status_code != 200:
+            logger.warning("Post niet bereikbaar: %s", post_url)
+            continue
+        m = _WPPDFEMB_DATA_RE.search(r.text)
+        if not m:
+            logger.warning("Geen wppdfemb-data op: %s", post_url)
+            continue
+        try:
+            b64 = m.group(1)
+            b64 += "=" * (-len(b64) % 4)
+            data = json.loads(base64.b64decode(b64).decode())
+            pdf_url = data["url"]
+        except Exception as exc:
+            logger.warning("wppdfemb decode fout op %s: %s", post_url, exc)
+            continue
+
+        bestandsnaam = Path(urlparse(pdf_url).path).name
+        datum = datum_uit_pad(bestandsnaam)
+        if datum is not None and datum < grensdatum:
+            continue
+        datum_str = datum.isoformat() if datum else "onbekend"
+        alle_pdfs.append({"url": pdf_url, "naam": bestandsnaam, "datum": datum_str})
+
+    logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
+
+    alle_resultaten: list[DownloadResult] = []
+    for pdf in alle_pdfs:
+        hint = sanitize_filename(f"{pdf['datum']}_{pdf['naam']}" if pdf["datum"] else pdf["naam"])
+        result = download_document(
+            SESSION, _config,
+            pdf["url"],
+            gem_dir,
+            filename_hint=hint or pdf["naam"],
+            require_pdf=True,
+        )
+        alle_resultaten.append(result)
+
+    gedownload = sum(1 for r in alle_resultaten if r.success and not r.skipped)
+    print_summary(alle_resultaten, naam=naam)
+    return len(alle_resultaten), gedownload
 
 
 def _get_via_playwright(url: str) -> str | None:
@@ -815,6 +895,10 @@ def scrape_gemeente(
     # LetsGoCity-platform heeft een volledig eigen API-stroom
     if config.get("letsgocity"):
         return _scrape_letsgocity(config, output_dir, maanden)
+
+    # wppdfemb: WordPress sites die PDFs embedden via iframe met base64-encoded JSON
+    if config.get("wppdfemb"):
+        return _scrape_wppdfemb(config, output_dir, maanden)
 
     grensdatum = date.today() - timedelta(days=maanden * 31)
     naam = config["naam"]

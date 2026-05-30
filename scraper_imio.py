@@ -60,11 +60,12 @@ _FR_MAANDEN: dict[str, int] = {
     "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12, "decembre": 12,
 }
 
-# Regex om een jaar-sublink te herkennen: pad eindigt op /YYYY of /YYYY-N of /pv-YYYY of /pv-YYYY-N
-_JAAR_LINK_RE = re.compile(r"/((?:[a-z]+-)?20\d{2})(?:-\d+)?/?$", re.IGNORECASE)
+# Regex om een jaar-sublink te herkennen: pad eindigt op /YYYY of /YYYY-N of /prefix-YYYY
+# Prefix mag meerdere woorden bevatten (bijv. conseils-communaux-2022)
+_JAAR_LINK_RE = re.compile(r"/((?:[a-z]+-)*20\d{2})(?:-\d+)?/?$", re.IGNORECASE)
 
-# Jaar extraheren uit een URL-pad (bv. /2026, /pv-2026-1, /annee-2026)
-_JAAR_IN_URL_RE = re.compile(r"/(?:[a-z]+-?-)?(20\d{2})(?:-\d+)?/?$", re.IGNORECASE)
+# Jaar extraheren uit een URL-pad (bv. /2026, /pv-2026-1, /annee-2026, /conseils-communaux-2022)
+_JAAR_IN_URL_RE = re.compile(r"/(?:[a-z-]*?)?(20\d{2})(?:-\d+)?/?$", re.IGNORECASE)
 
 # Plone faceted query URL-suffix
 _FACETED_QUERY_SUFFIX = "/@@faceted_query"
@@ -277,6 +278,48 @@ GEMEENTEN: dict[str, dict] = {
         "listing_pad": "/ma-commune/vie-politique/copy_of_proces-verbaux-des-conseils-communaux",
         "ajax_load": True,
     },
+    "www.lessines.be": {
+        "naam": "Lessines",
+        # Structuur A: jaar-subpagina's; Plone; .pdf/view-suffix (auto-gestript); datum via bestandsnaam
+        "listing_pad": "/ma-ville/vie-politique/conseil-communal/proces-verbaux/proces-verbaux-des-conseils-communaux-pdf",
+    },
+    "www.leroeulx.be": {
+        "naam": "Le Roeulx",
+        # Structuur A: jaar-subpagina's; Plone; .pdf/view-suffix (auto-gestript); datum YYYY-MM-DD in bestandsnaam
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux",
+    },
+    "www.attert.be": {
+        "naam": "Attert",
+        # Structuur B: alles op één pagina (/aa subfolder); datum YYYY_MM_DD of Frans in bestandsnaam
+        "listing_pad": "/notre-commune/vie-politique/conseil-communal/seances-du-conseil-communal/proces-verbaux-du-conseil-communal/aa",
+    },
+    "www.beauraing.be": {
+        "naam": "Beauraing",
+        # Structuur A: jaar-subpagina's (conseils-YYYY / conseils-communaux-YYYY); .pdf/view-suffix;
+        # datum via linktekst DD-MM-YYYY (bijv. "CC 27-01-2025")
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux",
+        "plone_folder_listing": True,
+    },
+    "www.villedespa.be": {
+        "naam": "Spa",
+        # Structuur A: jaar-subpagina's /YYYY (2020-2025) + /copy_of_2025 (2026);
+        # .pdf/view-suffix; datum via linktekst Frans (bijv. "18 décembre 2025 - Procès verbal")
+        "listing_pad": "/ma-ville/vie-politique/conseil-communal/ordres-du-jour-et-proces-verbaux",
+        "plone_folder_listing": True,
+    },
+    "www.profondeville.be": {
+        "naam": "Profondeville",
+        # Structuur B: alle PDFs op één pagina (OJ + notes + projet-décisions);
+        # filenames: conseil-communal-DD-MM-YYYY-type.pdf
+        "listing_pad": "/commune/vie-politique/conseil-communal/ordres-du-jour-et-proces-verbaux",
+    },
+    "www.villedecomines-warneton.be": {
+        "naam": "Comines-Warneton",
+        # Structuur D: plain listing met sessiepagina's; PDFs in /telechargement/;
+        # datum via linktekst Frans (bijv. "Conseil communal du 20 avril 2026")
+        "listing_pad": "/fr/ma-commune/politique/conseil-communal",
+        "subpaginas": True,
+    },
 }
 
 
@@ -314,17 +357,23 @@ def _absolute(href: str) -> str:
 def _datum_uit_tekst(tekst: str) -> date | None:
     """Probeer een datum te parsen uit Franstalige linktekst."""
     m = _DATUM_TEKST_RE.search(tekst)
-    if not m:
-        return None
-    dag = int(m.group(1))
-    maand = _FR_MAANDEN.get(m.group(2).lower())
-    jaar = int(m.group(3))
-    if maand is None:
-        return None
-    try:
-        return date(jaar, maand, dag)
-    except ValueError:
-        return None
+    if m:
+        dag = int(m.group(1))
+        maand = _FR_MAANDEN.get(m.group(2).lower())
+        jaar = int(m.group(3))
+        if maand is not None:
+            try:
+                return date(jaar, maand, dag)
+            except ValueError:
+                pass
+    # Patroon: DD-MM-YYYY numeriek (bijv. "CC 27-01-2025", "PV 15-12-2025")
+    m = re.search(r"\b(\d{1,2})[-./](\d{2})[-./](20\d{2})\b", tekst)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    return None
 
 
 def _datum_uit_pad(pad: str) -> date | None:
@@ -423,22 +472,29 @@ def _haal_jaarpaginas(html: str, index_url: str, grensjaar: int) -> list[str]:
     """
     soup = BeautifulSoup(html, "lxml")
     basis_netloc = urlparse(index_url).netloc
-    jaar_urls: dict[int, str] = {}
+    basis_pad = urlparse(index_url).path.rstrip("/")
+    jaar_urls: list[str] = []
+    seen_urls: set[str] = set()
 
     for a in soup.find_all("a", href=True):
         href = a["href"]
         full = _absolute(href)
         if urlparse(full).netloc != basis_netloc:
             continue
+        # Jaar-subpagina moet sub-path van listing URL zijn
+        link_pad = urlparse(full).path.rstrip("/")
+        if not link_pad.startswith(basis_pad + "/"):
+            continue
         pad = urlparse(full).path
         m = _JAAR_IN_URL_RE.search(pad)
         if not m:
             continue
         jaar = int(m.group(1))
-        if jaar >= grensjaar and jaar not in jaar_urls:
-            jaar_urls[jaar] = full
+        if jaar >= grensjaar and full not in seen_urls:
+            seen_urls.add(full)
+            jaar_urls.append(full)
 
-    return list(jaar_urls.values())
+    return jaar_urls
 
 
 def _haal_faceted_zitting_urls(listing_pad: str, grensdatum: date) -> list[str]:
@@ -484,6 +540,48 @@ def _haal_faceted_zitting_urls(listing_pad: str, grensdatum: date) -> list[str]:
     return zitting_urls
 
 
+def _haal_subpagina_zitting_urls(listing_pad: str, grensdatum: date) -> list[str]:
+    """
+    Structuur D: plain Plone listing zonder faceted query.
+    Alle sessiepagina's staan op één listingpagina als directe kind-links.
+    Geeft lijst van zitting-URLs waarvan datum >= grensdatum.
+    """
+    index_url = _absolute(listing_pad)
+    listing_path = urlparse(index_url).path.rstrip("/")
+    basis_netloc = urlparse(index_url).netloc
+
+    resp = _get(index_url)
+    if not resp or resp.status_code != 200:
+        return []
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    zitting_urls: list[str] = []
+    seen: set[str] = set()
+
+    for a in soup.find_all("a", href=True):
+        full = _absolute(a["href"])
+        parsed = urlparse(full)
+        if parsed.netloc != basis_netloc:
+            continue
+        pad = parsed.path.rstrip("/")
+        if not pad.startswith(listing_path + "/"):
+            continue
+        # Geen verdere subpaden (directe kinderen)
+        rest = pad[len(listing_path) + 1:]
+        if "/" in rest or not rest:
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        tekst = a.get_text(" ", strip=True)
+        datum = _datum_uit_tekst(tekst)
+        if datum is not None and datum < grensdatum:
+            continue
+        zitting_urls.append(full)
+
+    return zitting_urls
+
+
 def scrape_gemeente(
     config: dict,
     output_dir: Path,
@@ -502,9 +600,12 @@ def scrape_gemeente(
 
     logger.info("▶  %s  (grensdatum=%s)", naam, grensdatum)
 
-    # Structuur C: faceted listing (geen jaar-subpagina's, PDFs op zitting-subpagina's)
-    if config.get("faceted"):
-        zitting_urls = _haal_faceted_zitting_urls(config["listing_pad"], grensdatum)
+    # Structuur C/D: subpagina's per zitting (PDFs op zitting-subpagina's)
+    if config.get("faceted") or config.get("subpaginas"):
+        if config.get("faceted"):
+            zitting_urls = _haal_faceted_zitting_urls(config["listing_pad"], grensdatum)
+        else:
+            zitting_urls = _haal_subpagina_zitting_urls(config["listing_pad"], grensdatum)
         alle_pdfs: list[dict] = []
         gezien_urls: set[str] = set()
         for zitting_url in zitting_urls:
@@ -514,7 +615,6 @@ def scrape_gemeente(
             for pdf in _pdfs_van_pagina(r.text, zitting_url):
                 if pdf["url"] not in gezien_urls:
                     gezien_urls.add(pdf["url"])
-                    # Datum-filter via bestandsnaam
                     datum = _datum_uit_pad(pdf["url"])
                     if datum is None:
                         datum = _datum_uit_tekst(pdf["naam"])

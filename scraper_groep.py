@@ -31,6 +31,7 @@ Gebruik:
     uv run python scraper_groep.py --type smartcities --alle --maanden 6
     uv run python scraper_groep.py --type cipalschaubroeck --orgaan "Gemeenteraad" --maanden 12
     uv run python scraper_groep.py --type meetingburger --alle --maanden 3
+    uv run python scraper_groep.py --alle --maanden 6 --parallel 4
     uv run python scraper_groep.py --gemeente Aalst --alle --maanden 6
 """
 
@@ -41,6 +42,8 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -57,6 +60,26 @@ CSV_PAD = Path(__file__).parent / "simba-source.csv"
 SCRIPT_DIR = Path(__file__).parent
 
 console = Console()
+
+
+@dataclass
+class ScrapeResult:
+    """Resultaat van één gemeente-scraper subprocess."""
+    idx: int
+    totaal: int
+    gemeente: dict
+    cmd: list[str] | None
+    returncode: int | None
+    output: str
+    error: str | None = None
+
+    @property
+    def skipped(self) -> bool:
+        return self.cmd is None
+
+    @property
+    def success(self) -> bool:
+        return self.cmd is not None and self.returncode == 0 and self.error is None
 
 
 def _url_syntax_ok(url: str) -> bool:
@@ -332,6 +355,8 @@ _IMIO_HOSTS: frozenset[str] = frozenset({
     "www.donceel.be", "www.villers-la-ville.be",
     "www.beaumont.be", "www.cerfontaine.be", "www.ecaussinnes.be", "www.estaimpuis.be",
     "www.onhaye.be", "www.saint-hubert.be", "www.sivry-rance.be",
+    "www.lessines.be", "www.leroeulx.be", "www.attert.be", "www.beauraing.be",
+    "www.villedecomines-warneton.be", "www.profondeville.be", "www.villedespa.be",
 })
 
 # Waalse WordPress/Plone-gemeenten — scraper_wordpress.py via hostname
@@ -352,6 +377,7 @@ _WAALSE_WP_HOSTS: frozenset[str] = frozenset({
     "www.pontacelles.be",
     "www.province.namur.be",
     "www.courcelles.eu",
+    "www.marchin.be",
 })
 
 # iDélibé commune ID's (www.conseilcommunal.be/commune/{id})
@@ -566,6 +592,88 @@ def bouw_commando(
 # Batch scrapen
 # ---------------------------------------------------------------------------
 
+def _run_gemeente_scraper(
+    idx: int,
+    totaal: int,
+    gemeente: dict,
+    cmd: list[str] | None,
+) -> ScrapeResult:
+    """Voer één gemeente-scraper uit en buffer stdout/stderr."""
+    if cmd is None:
+        return ScrapeResult(
+            idx=idx,
+            totaal=totaal,
+            gemeente=gemeente,
+            cmd=None,
+            returncode=None,
+            output="",
+        )
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            cwd=str(SCRIPT_DIR),
+            check=False,
+        )
+        return ScrapeResult(
+            idx=idx,
+            totaal=totaal,
+            gemeente=gemeente,
+            cmd=cmd,
+            returncode=proc.returncode,
+            output=proc.stdout or "",
+        )
+    except Exception as e:
+        return ScrapeResult(
+            idx=idx,
+            totaal=totaal,
+            gemeente=gemeente,
+            cmd=cmd,
+            returncode=None,
+            output="",
+            error=str(e),
+        )
+
+
+def _print_scrape_result(result: ScrapeResult) -> None:
+    """Print één gebufferd subprocess-resultaat in vaste volgorde."""
+    naam = result.gemeente["gemeente"]
+    type_ = result.gemeente["type"]
+    url = result.gemeente["url"]
+
+    console.print(
+        f"[bold cyan][{result.idx}/{result.totaal}][/bold cyan] "
+        f"[bold]{naam}[/bold]  [dim]{url or '(geen URL)'}[/dim]"
+    )
+
+    if result.cmd is None:
+        console.print(
+            f"  [yellow][!] Type '{type_}' heeft geen scraper -- overgeslagen.[/yellow]"
+        )
+        return
+
+    console.print(f"  [dim]$ {' '.join(result.cmd)}[/dim]")
+
+    if result.output:
+        for lijn in result.output.splitlines(keepends=True):
+            try:
+                console.print(f"  {lijn}", end="", markup=False, highlight=False)
+            except Exception:
+                sys.stdout.buffer.write(f"  {lijn}".encode("utf-8", errors="replace"))
+                sys.stdout.buffer.flush()
+
+    if result.error:
+        console.print(f"  [red][FOUT] Bij starten scraper: {result.error}[/red]")
+    elif result.returncode != 0:
+        console.print(f"  [red][FOUT] Exitcode {result.returncode}[/red]")
+
+
 def scrape_batch(
     gemeenten: list[dict],
     orgaan: str | None,
@@ -575,73 +683,70 @@ def scrape_batch(
     agendapunten: bool = False,
     zichtbaar: bool = False,
     pauze: float = 2.0,
+    parallel: int = 1,
 ) -> None:
     """Doorloop alle gemeenten en voer de juiste scraper uit voor elk."""
     totaal = len(gemeenten)
     geslaagd = 0
     overgeslagen = 0
     mislukt = 0
+    parallel = max(1, parallel)
 
     console.print(Rule(
         f"[bold cyan]Batch scrapen — {totaal} gemeente(n)[/bold cyan]",
         style="cyan",
     ))
+    if parallel > 1:
+        console.print(f"[dim]Parallelle subprocessen: {parallel}[/dim]")
     console.print()
 
+    jobs: list[tuple[int, dict, list[str] | None]] = []
     for idx, gemeente in enumerate(gemeenten, 1):
-        naam = gemeente["gemeente"]
-        type_ = gemeente["type"]
-        url = gemeente["url"]
-
-        console.print(
-            f"[bold cyan][{idx}/{totaal}][/bold cyan] "
-            f"[bold]{naam}[/bold]  [dim]{url or '(geen URL)'}[/dim]"
-        )
-
         cmd = bouw_commando(
             gemeente, orgaan, maanden, output_basis,
             doc_filter, agendapunten, zichtbaar,
         )
+        jobs.append((idx, gemeente, cmd))
 
-        if cmd is None:
-            console.print(
-                f"  [yellow][!] Type '{type_}' heeft geen scraper -- overgeslagen.[/yellow]"
-            )
+    if parallel == 1:
+        results = []
+        for pos, (idx, gemeente, cmd) in enumerate(jobs, 1):
+            result = _run_gemeente_scraper(idx, totaal, gemeente, cmd)
+            results.append(result)
+            _print_scrape_result(result)
+            if pos < len(jobs):
+                time.sleep(pauze)
+    else:
+        results_by_idx: dict[int, ScrapeResult] = {}
+        with ThreadPoolExecutor(max_workers=parallel) as executor:
+            futures = []
+            for pos, (idx, gemeente, cmd) in enumerate(jobs, 1):
+                futures.append(executor.submit(_run_gemeente_scraper, idx, totaal, gemeente, cmd))
+                if pauze > 0 and pos < len(jobs):
+                    time.sleep(pauze)
+
+            for future in as_completed(futures):
+                result = future.result()
+                results_by_idx[result.idx] = result
+                status = "OK" if result.success else "SKIP" if result.skipped else "FOUT"
+                console.print(
+                    f"[dim][{len(results_by_idx)}/{totaal}] klaar: "
+                    f"{result.gemeente['gemeente']} ({status})[/dim]"
+                )
+
+        results = [results_by_idx[idx] for idx, _, _ in jobs]
+        console.print()
+        console.print(Rule("[bold]Output per gemeente[/bold]", style="dim"))
+        for result in results:
+            _print_scrape_result(result)
+
+    for result in results:
+        if result.skipped:
             overgeslagen += 1
-            continue
-
-        console.print(f"  [dim]$ {' '.join(cmd)}[/dim]")
-
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-                cwd=str(SCRIPT_DIR),
-            )
-            assert proc.stdout is not None
-            for lijn in proc.stdout:
-                try:
-                    console.print(f"  {lijn}", end="", markup=False, highlight=False)
-                except Exception:
-                    sys.stdout.buffer.write(f"  {lijn}".encode("utf-8", errors="replace"))
-                    sys.stdout.buffer.flush()
-            proc.wait()
-            if proc.returncode == 0:
-                geslaagd += 1
-            else:
-                console.print(f"  [red][FOUT] Exitcode {proc.returncode}[/red]")
-                mislukt += 1
-        except Exception as e:
-            console.print(f"  [red][FOUT] Bij starten scraper: {e}[/red]")
+        elif result.success:
+            geslaagd += 1
+        else:
             mislukt += 1
-
-        if idx < totaal:
-            time.sleep(pauze)
 
     console.print()
     console.print(Rule("[bold]Resultaat[/bold]", style="dim"))
@@ -856,6 +961,17 @@ def tui_main(gemeenten: list[dict]) -> None:
             style=STIJL,
         ).ask() or False
 
+    # ── Paralleliteit ─────────────────────────────────────────────────────
+    parallel_str = questionary.text(
+        "Aantal parallelle gemeenten?",
+        default="1",
+        style=STIJL,
+    ).ask()
+    try:
+        parallel = max(1, int(parallel_str or "1"))
+    except ValueError:
+        parallel = 1
+
     # ── Overzicht + bevestiging ───────────────────────────────────────────
     console.print()
     tabel = Table(box=box.ROUNDED, border_style="dim", show_header=False, padding=(0, 1))
@@ -867,6 +983,7 @@ def tui_main(gemeenten: list[dict]) -> None:
     tabel.add_row("Periode", f"Laatste {maanden} maand(en)")
     tabel.add_row("Uitvoermap", f"{output}/<gemeente>/")
     tabel.add_row("Documentfilter", doc_filter or "[dim]Geen[/dim]")
+    tabel.add_row("Parallel", str(parallel))
     if heeft_agendapunten_optie:
         tabel.add_row("Agendapunten", "Ja" if agendapunten else "Nee")
     console.print(Panel(tabel, title="[bold]Overzicht[/bold]", border_style="cyan"))
@@ -880,6 +997,7 @@ def tui_main(gemeenten: list[dict]) -> None:
     scrape_batch(
         te_verwerken, orgaan, maanden, output,
         doc_filter, agendapunten, zichtbaar,
+        parallel=parallel,
     )
 
 
@@ -909,6 +1027,7 @@ Voorbeelden:
   uv run python scraper_groep.py --type smartcities --alle --maanden 6
   uv run python scraper_groep.py --type cipalschaubroeck --orgaan "Gemeenteraad" --maanden 12
   uv run python scraper_groep.py --type meetingburger --alle --maanden 3
+  uv run python scraper_groep.py --alle --maanden 6 --parallel 4
   uv run python scraper_groep.py --gemeente Aalst --alle --maanden 6
         """,
     )
@@ -958,7 +1077,11 @@ Voorbeelden:
     )
     parser.add_argument(
         "--pauze", type=float, default=2.0,
-        help="Wachttijd in seconden tussen gemeenten (standaard: 2.0)",
+        help="Wachttijd in seconden tussen gemeente-starts (standaard: 2.0)",
+    )
+    parser.add_argument(
+        "--parallel", type=int, default=1,
+        help="Aantal gemeenten gelijktijdig verwerken (standaard: 1)",
     )
 
     args = parser.parse_args()
@@ -1017,6 +1140,7 @@ Voorbeelden:
         agendapunten=args.agendapunten,
         zichtbaar=args.zichtbaar,
         pauze=args.pauze,
+        parallel=args.parallel,
     )
 
 

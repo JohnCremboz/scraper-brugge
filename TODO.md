@@ -204,58 +204,69 @@ Alle 167 deliberations.be-gemeenten systematisch onderzocht. Bevindingen:
 - Sivry-Rance → www.sivry-rance.be (imio, Structuur A + ajax_load)
 
 **Vereist Playwright (JS-rendered):**
-- [ ] **Marchin** → marchin.be/bienvenue-a-marchin/conseil-communal/pv-du-conseil-communal/ (WordPress + Elementor, 40 PDFs achter JS)
+- [x] **Marchin** → www.marchin.be (wppdfemb iframe-plugin, statische HTML, 17 PDFs in 24m) ✅
 
-**Geblokkeerd door 403 / niet bereikbaar — eigen iMio-site vermoedelijk PDFs (nog te verifiëren):**
-- [ ] **Lierneux** → lierneux.be/vie-communale/vie-politique/ordre-du-jour-du-conseil-communal/ (403, 22 PVs 2020–2026 gezien door agent)
-- [ ] **Attert** → www.attert.be/.../proces-verbaux (iMio, 403)
-- [ ] **Beauraing** → www.beauraing.be/.../proces-verbaux (iMio, 403)
-- [ ] **Bertrix** → www.bertrix.be/.../proces-verbaux (iMio, minimale respons)
-- [ ] **Celles** → iMio PV-pad, 403
-- [ ] **Comines-Warneton** → www.villedecomines-warneton.be (iMio, 403)
-- [ ] **Érezée** → iMio PV-pad, 403
-- [ ] **Étalle** → iMio PV-pad, minimale respons
-- [ ] **Fauvillers** → iMio PV-pad, minimale respons
-- [ ] **Ferrières** → iMio, 403
-- [ ] **Florennes** → iMio, 403
-- [ ] **Hamoir** → www.hamoir.be/.../proces-verbaux (iMio, 403)
-- [ ] **Jemeppe-sur-Sambre** → WordPress, geen PV PDFs gevonden, nader onderzoek
-- [ ] **Lessines** → iMio PV-pad, 403
-- [ ] **Manhay** → iMio PV-pad, 403
-- [ ] **Martelange** → iMio, 403
-- [ ] **Montigny-le-Tilleul** → iMio PV-pad bestaat, nader onderzoek
-- [ ] **Nandrin** → iMio, 403 (delib.be heeft al 2 annex-PDFs)
-- [ ] **Olne** → iMio, 404 op pad
-- [ ] **Péruwelz** → iMio, 403
-- [ ] **Profondeville** → iMio, 403 (ook login wall op delib.be decisions)
-- [ ] **Sambreville** → iMio, 403
-- [ ] **Somme-Leuze** → iMio, 403
-- [ ] **Spa** → ville-spa.be (ECONNREFUSED), alternatief URL nodig
-- [ ] **Stavelot** → iMio, 403
-- [ ] **Theux** → iMio, 403
-- [ ] **Vresse-sur-Semois** → iMio login wall op hoofdpagina
+**Geblokkeerd door 403 / niet bereikbaar — eigen iMio-site (verificatie publicatiemodel nodig):**
+> **Let op:** ook al heeft de eigen site geen toegankelijke PV-PDFs, deliberations.be kan uittreksels bevatten die wél nuttig zijn. "Geen PV-PDF" = niet het einde van het onderzoek.
+- [x] **Lierneux** → deliberations.be/lierneux (HTML→PDF via Playwright, 440+ beslissingen) ✅
+- [x] **Attert** → www.attert.be/.../proces-verbaux-du-conseil-communal/aa (iMio Structuur B, YYYY_MM_DD filenames, 17 PDFs) ✅
+- [x] **Beauraing** → www.beauraing.be/.../proces-verbaux (iMio Structuur A, jaar-subpagina's, .pdf/view, DD-MM-YYYY linktekst, 16+ PDFs) ✅
+- [x] **Bertrix** → deliberations.be/bertrix publiek toegankelijk (~820 beslissingen, HTML→PDF), eigen site niet nodig ✅
+- [x] **Celles** → deliberations.be/celles publiek toegankelijk (~660 beslissingen, HTML→PDF), eigen site niet nodig ✅
+- [x] **Comines-Warneton** → www.villedecomines-warneton.be (iMio Structuur D: session subpagina's + /telechargement/ PDFs, 66+ PDFs) ✅
+- [x] **Érezée** → deliberations.be/erezee publiek toegankelijk (~460 beslissingen, HTML→PDF) ✅
+- [x] **Étalle** → deliberations.be/etalle publiek toegankelijk (~220 beslissingen, HTML→PDF) ✅
+- [x] **Fauvillers** → deliberations.be/fauvillers publiek toegankelijk (~40 beslissingen, HTML→PDF) ✅
+- [x] **Ferrières** → deliberations.be/ferrieres publiek toegankelijk (~400 beslissingen, HTML→PDF) ✅
+- [x] **Florennes** → deliberations.be/florennes publiek toegankelijk (~740 beslissingen, HTML→PDF) ✅
+- [x] **Hamoir** → deliberations.be/hamoir publiek toegankelijk (~360 beslissingen, HTML→PDF) ✅
+- [x] **Jemeppe-sur-Sambre** → deliberations.be/jemeppe-sur-sambre publiek (~1100 beslissingen, HTML→PDF) ✅
+- [x] **Lessines** → www.lessines.be (Plone jaar-subfolders, `/view`-suffix, 10 PDFs/18m) ✅
+- [x] **Manhay** → deliberations.be/manhay publiek (~580 beslissingen, HTML→PDF) ✅
+- [x] **Martelange** → deliberations.be/martelange publiek (~160 beslissingen, HTML→PDF) ✅
+- [x] **Montigny-le-Tilleul** → deliberations.be/montigny-le-tilleul publiek (~1100 beslissingen, HTML→PDF) ✅
+- [x] **Nandrin** → deliberations.be/nandrin publiek (~560 beslissingen, HTML→PDF) ✅
+- [x] **Olne** → deliberations.be/olne publiek (~540 beslissingen, HTML→PDF) ✅
+- [x] **Péruwelz** → deliberations.be/peruwelz publiek (~920 beslissingen, HTML→PDF) ✅
+- [x] **Profondeville** → www.profondeville.be (iMio Structuur B, 58+ PDFs: OJ + notes + projets-décisions) ✅
+- [x] **Sambreville** → deliberations.be/sambreville publiek (~2260 beslissingen, HTML→PDF) ✅
+- [x] **Somme-Leuze** → deliberations.be/somme-leuze publiek (~520 beslissingen, HTML→PDF) ✅
+- [x] **Spa** → www.villedespa.be (iMio Structuur A, .pdf/view, /copy_of_2025=2026, 27+ PDFs: PVs + OJ) ✅
+- [x] **Stavelot** → deliberations.be/stavelot publiek (~460 beslissingen, HTML→PDF) ✅
+- [x] **Theux** → deliberations.be/theux publiek (~920 beslissingen, HTML→PDF) ✅
+- [x] **Vresse-sur-Semois** → deliberations.be/vresse-sur-semois publiek (~640 beslissingen, HTML→PDF) ✅
 
 **Verkeerde/kapotte URL in CSV — correct URL nog te vinden:**
-- [ ] **Chimay** → chimay.com = biersite; juiste gemeente-URL onbekend
-- [ ] **Court-Saint-Étienne** → onofficiële fansite gevonden; officieel URL onbekend
-- [ ] **Dour** → www.dour.be ECONNREFUSED
-- [ ] **Le Roeulx** → leroeulx.be ECONNREFUSED
-- [ ] **Libramont** → ECONNREFUSED
-- [ ] **Limbourg** → ECONNREFUSED
-- [ ] **Manage** → TLS-certificaatfout op www.manage.be
-- [ ] **Marche-en-Famenne** → marcheenfamenne.be = Dovendi domeinmarktplaats
-- [ ] **Merbes-le-Château** → www.merbes-le-chateau.be gehijackt door loodgietersbedrijf
-- [ ] **Trois-Ponts** → trois-ponts.be pas geregistreerd, geen inhoud
+- [x] **Le Roeulx** → www.leroeulx.be (Plone jaar-subfolders, `/view`-suffix, 19 PDFs/18m) ✅
+- [x] **Manage** → www.manage-commune.be (al in scraper_imio.py Structuur B; CSV hersteld) ✅
+- [x] **Chimay** → deliberations.be = uittreksels-model (605 beslissingen + OJ + notes de synthèse per seance); chimayville.be heeft archief-PVs 2022–2023 maar 2024+ login-beschermd; CSV correct op deliberations.be ✅
+- [x] **Court-Saint-Étienne** → hybride: eigen site had PV-PDFs 2023–jul2024 (12 stuks), daarna switch naar uittreksels op deliberations.be (33 seances). CSV correct op delib.be. ✅
+- [x] **Dour** → uittreksels-model op deliberations.be (29 seances). Geen PVs op communedour.be. CSV correct. ✅
+- [x] **Libramont-Chevigny** → uittreksels-model op deliberations.be. Eigen site heeft diverse docs maar geen PVs. CSV correct. ✅
+- [x] **Limbourg** → uittreksels-model op deliberations.be (28 seances). Geen PVs op ville-limbourg.be. CSV correct. ✅
+- [x] **Marche-en-Famenne** → uittreksels-model op deliberations.be (35 seances). Geen PVs op marche.be. CSV correct. ✅
+- [x] **Merbes-le-Château** → uittreksels-model op deliberations.be (36 seances). Geen PVs op merbeslechateau.be. CSV correct. ✅
+- [x] **Trois-Ponts** → uittreksels-model op deliberations.be (54 seances). Geen PVs op troisponts.be. CSV correct. ✅
 
 **Historisch archief op eigen site (delib.be is actueler voor recent):**
-- [ ] **Beyne-Heusay** → www.beyne-heusay.be/index.php/proces-verbaux-cc (145 PVs 2006–2023, delib.be 2023+) — overwegen als aanvulling
-- [ ] **Waimes** → www.waimes.be/.../pv-du-conseil-communal/ (39 PVs 2019–2023, delib.be 2024+)
+- [x] **Beyne-Heusay** → deliberations.be/beyne-heusay dekt 2023+; historisch archief (2006–2023) genegeerd ✅
+- [x] **Waimes** → deliberations.be/waimes dekt 2024+; historisch archief (2019–2023) genegeerd ✅
 - **Frasnes-lez-Anvaing** → eigen site stopt 2023, delib.be is nu de bron ← al gecorrigeerd (CSV wijst naar delib.be)
+
+**Publicatiemodellen — twee types (belangrijk onderscheid):**
+
+| Model | Vlaamse term | Waalse term | Voorbeeld |
+|-------|-------------|-------------|-----------|
+| Volledig document per vergadering | Notulen / PV | Procès-verbal (PDF) | Lessines, Le Roeulx, Marchin |
+| Beslissing per beslissing | Uittreksels | Décisions / Délibérations | Chimay (delib.be), meeste delib.be-gemeenten |
+
+Beide modellen zijn nuttige output voor dit project. "Geen PV-PDF" betekent NIET "geen data" — het kan het uittreksels-model zijn.
 
 **Deliberations.be structuur (vastgesteld):**
 - 156/167 beslissings-endpoint publiek toegankelijk; 11 login wall (attert, beauraing, comines-warneton, houffalize, juprelle, manage, mouscron, oreye, profondeville, spa, vielsalm)
-- Slechts 2 gemeenten hebben echte PV PDFs op delib.be: **Mons** en **Seneffe**
-- Overige metadata-only; PDFs via bijlagen op detailpagina (zeldzaam)
+- Slechts 2 gemeenten hebben volledige PV als PDF op delib.be: **Mons** en **Seneffe**
+- Overige gemeenten publiceren beslissing per beslissing (uittreksels/délibérations) — dit IS de inhoud, niet enkel metadata
+- Bijlagen per beslissing (zeldzaam): soms extra PDFs per agendapunt
 - Login wall detectie toegevoegd aan `scraper_deliberations.py`
 
 ### Deliberations.be — scraper verbeteringen (mei 2026)
