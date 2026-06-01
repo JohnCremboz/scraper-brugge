@@ -142,6 +142,8 @@ def main() -> None:
                         help="Toon organen (compatibiliteit)")
     parser.add_argument("--agendapunten", action="store_true",
                         help="Niet van toepassing (compatibiliteit)")
+    parser.add_argument("--alle", action="store_true",
+                        help="Niet van toepassing (compatibiliteit)")
     parser.add_argument("--debug", action="store_true",
                         help="Uitgebreide logging")
     args = parser.parse_args()

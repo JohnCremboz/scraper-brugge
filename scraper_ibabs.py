@@ -22,7 +22,7 @@ import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -168,15 +168,6 @@ def haal_vergaderingen(base_url: str, maanden: int = 3) -> list[dict]:
             if datum < cutoff:
                 continue
 
-            # Haal ook alle verdere UUIDs op uit de sidebar van deze vergadering
-            extra_links = [
-                a["href"] for a in verg_soup.find_all("a", href=True)
-                if re.search(r"/Agenda/Index/[0-9a-f-]{36}", a["href"])
-            ]
-            for ex_href in extra_links:
-                ex_uuid = ex_href.rstrip("/").split("/")[-1]
-                gezien_uuids.add(ex_uuid)  # markeer als gezien, maar niet opnieuw fetchen
-
             # Titel en orgaan uit de h1/header
             orgaan = _haal_orgaan(verg_soup)
             vergaderingen.append({
@@ -191,6 +182,14 @@ def haal_vergaderingen(base_url: str, maanden: int = 3) -> list[dict]:
 
 
 def _parseer_datum(tekst: str) -> date | None:
+    m_kort = re.search(r"\b(\d{1,2})-(\d{1,2})-(\d{4})\b", tekst)
+    if m_kort:
+        dag, maand, jaar = int(m_kort.group(1)), int(m_kort.group(2)), int(m_kort.group(3))
+        try:
+            return date(jaar, maand, dag)
+        except ValueError:
+            return None
+
     m = re.search(
         r"(\d{1,2})\s+(" + "|".join(DUTCH_MONTHS.keys()) + r")\s+(\d{4})",
         tekst, re.I,
@@ -274,12 +273,12 @@ def haal_vergadering_details(vergadering: dict, base_url: str) -> dict:
         href = a["href"]
         if "/Agenda/Document/" not in href:
             continue
-        doc_naam = a.get_text(strip=True)
+        doc_naam = a.get_text(" ", strip=True)
+        doc_naam = re.sub(r"\s+\d+(?:[.,]\d+)?\s*(?:KB|MB)\s*$", "", doc_naam, flags=re.I)
         if not doc_naam:
             continue
         # Extraheer query parameters
-        from urllib.parse import parse_qs, urlparse as _up
-        parsed_href = _up(href)
+        parsed_href = urlparse(href)
         qs = parse_qs(parsed_href.query)
         doc_id = qs.get("documentId", [None])[0]
         item_id = qs.get("agendaItemId", [None])[0]
@@ -296,6 +295,98 @@ def haal_vergadering_details(vergadering: dict, base_url: str) -> dict:
     vergadering["agendapunten"] = agendapunten
     vergadering["documenten"] = documenten
     return vergadering
+
+
+def haal_report_documenten(base_url: str, maanden: int = 3) -> list[dict]:
+    """Haal PDF-bijlagen op uit iBabs Overzichten/Reports."""
+    vandaag = date.today()
+    cutoff = date(vandaag.year, max(1, vandaag.month - maanden + 1), 1)
+
+    resp = _get(f"{base_url}/Reports")
+    if resp is None:
+        return []
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    report_links: dict[str, str] = {}
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not re.search(r"/Reports/Details/[0-9a-f-]{36}", href):
+            continue
+        titel = a.get_text(" ", strip=True)
+        if not re.search(r"\b(notulen|verslag|besluitenlijst)\b", titel, re.I):
+            continue
+        report_id = href.rstrip("/").split("/")[-1]
+        report_links[report_id] = titel
+
+    documenten: list[dict] = []
+    gezien_docs: set[str] = set()
+    gebruikte_namen: set[str] = set()
+
+    for report_id, report_titel in report_links.items():
+        data = {
+            "draw": "1",
+            "start": "0",
+            "length": "100",
+            "order[0][column]": "0",
+            "order[0][dir]": "desc",
+            "columns[0][data]": "registrationdate",
+            "columns[0][name]": "registrationdate",
+            "columns[1][data]": "title",
+            "columns[1][name]": "title",
+        }
+        try:
+            r = SESSION.post(
+                f"{base_url}/Reports/GetReportData/{report_id}",
+                data=data,
+                headers={"X-Requested-With": "XMLHttpRequest"},
+                timeout=20,
+            )
+            r.raise_for_status()
+            rows = r.json().get("data", [])
+        except Exception:
+            continue
+
+        for row in rows:
+            reg_date = _parseer_datum(row.get("registrationdate", ""))
+            if reg_date is not None and reg_date < cutoff:
+                continue
+
+            item_id = row.get("DT_RowId")
+            if not item_id:
+                continue
+
+            item_resp = _get(f"{base_url}/Reports/Item/{item_id}")
+            if item_resp is None:
+                continue
+            item_soup = BeautifulSoup(item_resp.text, "lxml")
+
+            for a in item_soup.find_all("a", href=True):
+                href = a["href"]
+                if "/Reports/Document/" not in href:
+                    continue
+                qs = parse_qs(urlparse(href).query)
+                doc_id = qs.get("documentId", [None])[0]
+                if not doc_id or doc_id in gezien_docs:
+                    continue
+                gezien_docs.add(doc_id)
+
+                doc_naam = a.get_text(" ", strip=True)
+                doc_naam = re.sub(r"\s+\d+(?:[.,]\d+)?\s*(?:KB|MB)\s*$", "", doc_naam, flags=re.I)
+                if not doc_naam:
+                    doc_naam = row.get("title") or report_titel
+                if doc_naam in gebruikte_namen:
+                    doc_naam = f"{doc_naam} - {report_titel}"
+                gebruikte_namen.add(doc_naam)
+
+                documenten.append({
+                    "naam": doc_naam,
+                    "url": f"{base_url}/Document/View/{doc_id}",
+                    "local_file": None,
+                    "bron": report_titel,
+                    "datum": row.get("registrationdate"),
+                })
+
+    return documenten
 
 
 # ---------------------------------------------------------------------------
@@ -355,11 +446,23 @@ def scrape_gemeente(gemeente: dict, maanden: int = 3, docs: bool = True, output_
     for v in tqdm(vergaderingen, desc="Details verwerken"):
         haal_vergadering_details(v, base_url)
 
+    print("[3] Overzicht-documenten ophalen...")
+    report_documenten = haal_report_documenten(base_url, maanden)
+    if report_documenten:
+        vergaderingen.append({
+            "uuid": "reports",
+            "titel": "Overzichten",
+            "datum": "",
+            "url": f"{base_url}/Reports",
+            "agendapunten": [],
+            "documenten": report_documenten,
+        })
+
     n_docs = sum(len(v.get("documenten", [])) for v in vergaderingen)
     gedownload = 0
 
     if docs and n_docs > 0:
-        print(f"[3] Documenten downloaden ({n_docs} totaal)...")
+        print(f"[4] Documenten downloaden ({n_docs} totaal)...")
         for v in tqdm(vergaderingen, desc="Documenten downloaden"):
             for doc in v.get("documenten", []):
                 local = download_document(
@@ -373,9 +476,9 @@ def scrape_gemeente(gemeente: dict, maanden: int = 3, docs: bool = True, output_
                     doc["local_file"] = str(local.path)
                     gedownload += 1
     else:
-        print(f"[3] Documenten overgeslagen ({n_docs} beschikbaar).")
+        print(f"[4] Documenten overgeslagen ({n_docs} beschikbaar).")
 
-    print("[4] Metadata opslaan...")
+    print("[5] Metadata opslaan...")
     meta_pad = output_dir / f"{sanitize_filename(naam)}_metadata.json"
     exporteerbaar = [{k: v for k, v in verg.items() if k != "soup"} for verg in vergaderingen]
     meta_pad.write_text(json.dumps(exporteerbaar, ensure_ascii=False, indent=2), encoding="utf-8")

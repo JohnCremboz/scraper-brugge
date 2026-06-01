@@ -327,7 +327,7 @@ def main() -> None:
     parser.add_argument("--lijst", action="store_true", help="Toon lijst van gemeenten")
     parser.add_argument("--maanden", type=int, default=12,
                         help="Aantal maanden terug (standaard: 12)")
-    parser.add_argument("--filter", dest="document_filter",
+    parser.add_argument("--filter", "--document-filter", "-f", dest="document_filter",
                         help="Filter op documentnaam (bijv. 'PV')")
     parser.add_argument("--output", default="pdfs",
                         help="Output-directory (standaard: pdfs/)")

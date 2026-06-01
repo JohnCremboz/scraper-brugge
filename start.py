@@ -204,13 +204,13 @@ def bouw_commando(
 
     # Dedicated scrapers hebben hun URL al ingebakken.
     # Voor deliberations.be zit de gemeente-slug in het pad → volledige URL doorgeven.
-    if gemeente["gemeente"] not in DEDICATED:
+    if gemeente["gemeente"] not in DEDICATED and gemeente.get("type") != "idelibe":
         base = gemeente["url"] if gemeente.get("type") == "deliberations" else gemeente["base_url"]
         cmd += ["--base-url", base]
 
     # iBabs dedicated scrapers krijgen --gemeente ipv --alle
     dedicated_info = DEDICATED.get(gemeente["gemeente"], {})
-    if dedicated_info.get("gemeente_arg"):
+    if dedicated_info.get("gemeente_arg") or gemeente.get("type") == "idelibe":
         cmd += ["--gemeente", gemeente["gemeente"]]
     elif gemeente.get("type") == "irisnet":
         # irisnet heeft één scraper voor alle Brusselse gemeenten; --gemeente beperkt tot één.

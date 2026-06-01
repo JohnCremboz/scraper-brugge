@@ -549,10 +549,10 @@ def bouw_commando(
 
     cmd = ["uv", "run", "python", scraper]
 
-    if type_ == "ibabs":
-        # scraper_ibabs.py kent geen --base-url; de gemeente wordt opgezocht via --gemeente (naam/slug)
+    if type_ in {"ibabs", "idelibe"}:
+        # Deze scrapers kennen geen --base-url; de gemeente wordt opgezocht via --gemeente.
         cmd += ["--gemeente", gemeente["gemeente"]]
-        if orgaan:
+        if orgaan and type_ != "idelibe":
             cmd += ["--orgaan", orgaan]
     else:
         # Voor scrapers waar de gemeente-identiteit in het URL-pad zit (bijv. deliberations.be/{slug}

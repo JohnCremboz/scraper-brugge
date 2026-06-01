@@ -27,6 +27,7 @@ from base_scraper import (
     download_document as base_download_document,
     DownloadResult,
     logger,
+    rate_limited_get,
 )
 
 BASE_URL = "https://ranst.meetingburger.net"
@@ -52,14 +53,6 @@ def init_session():
         logger.warning("Sessie-initialisatie mislukt: %s", e)
 
 
-def sanitize_filename(name: str) -> str:
-    """Verwijder ongeldige tekens uit bestandsnamen."""
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
-    name = re.sub(r'_+', '_', name)
-    name = name.strip("_. ")
-    return name[:180] if len(name) > 180 else name or "document"
-
-
 def parse_datum_uit_titel(titel: str) -> datetime | None:
     """
     Probeer een datum te ontleden uit een vergaderingstitel zoals
@@ -81,82 +74,7 @@ def parse_datum_uit_titel(titel: str) -> datetime | None:
     return None
 
 
-def download_document(file_url: str, bestemming: Path, filename_hint: str = "") -> bool:
-    """
-    Download een HandleFile.ashx URL als bestand.
-    Zet &download=1 om de juiste Content-Disposition header te forceren.
-    """
-    # Voeg &download=1 toe als dat ontbreekt
-    if "download=1" not in file_url:
-        sep = "&" if "?" in file_url else "?"
-        dl_url = file_url + sep + "download=1"
-    else:
-        dl_url = file_url
 
-    full_url = urljoin(BASE_URL, dl_url) if not dl_url.startswith("http") else dl_url
-
-    try:
-        resp = SESSION.get(full_url, stream=True, timeout=60, allow_redirects=True)
-        if resp.status_code != 200:
-            return False
-
-        # Bepaal bestandsnaam: gebruik filename_hint (linktekst) als primaire bron,
-        # valt terug op Content-Disposition en daarna op UUID
-        naam = ""
-        if filename_hint:
-            naam = filename_hint
-        else:
-            cd = resp.headers.get("content-disposition", "")
-            if "filename=" in cd:
-                # UTF-8 encoded filename (RFC 5987)
-                m = re.search(r"filename\*=utf-8''([^\s;]+)", cd, re.IGNORECASE)
-                if m:
-                    from urllib.parse import unquote
-                    naam = unquote(m.group(1))
-                else:
-                    m = re.search(r'filename=["\']?([^"\';\n]+)', cd)
-                    if m:
-                        naam = m.group(1).strip().strip('"\'')
-
-        if not naam:
-            naam = file_url.split("id=")[-1].split("&")[0]
-
-        # Extensie toevoegen als nodig
-        if "." not in naam[-6:]:
-            content_type = resp.headers.get("content-type", "")
-            if "pdf" in content_type:
-                naam += ".pdf"
-            else:
-                naam += ".bin"
-
-        naam = sanitize_filename(naam)
-        bestemming_pad = bestemming / naam
-
-        # Overgeslagen als al bestaat (vorige run)
-        if bestemming_pad.exists():
-            return True
-
-        # Lees in chunks — controleer op PDF-header (optioneel)
-        eerste_chunk = None
-        chunks = []
-        for chunk in resp.iter_content(8192):
-            if chunk:
-                if eerste_chunk is None:
-                    eerste_chunk = chunk
-                chunks.append(chunk)
-
-        if not chunks:
-            return False
-
-        with open(bestemming_pad, "wb") as f:
-            for chunk in chunks:
-                f.write(chunk)
-
-        return True
-
-    except Exception as e:
-        print(f"      [!] Download fout {full_url}: {type(e).__name__}: {e}")
-        return False
 
 
 def haal_file_links_van_pagina(url: str) -> list[dict]:
@@ -170,7 +88,7 @@ def haal_file_links_van_pagina(url: str) -> list[dict]:
 
     try:
         full_url = urljoin(BASE_URL, url) if not url.startswith("http") else url
-        resp = SESSION.get(full_url, timeout=30)
+        resp = rate_limited_get(SESSION, full_url, _config, timeout=30)
         if resp.status_code != 200:
             return []
 
@@ -212,7 +130,7 @@ def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
     """
     try:
         full_url = urljoin(BASE_URL, vergadering_url) if not vergadering_url.startswith("http") else vergadering_url
-        resp = SESSION.get(full_url, timeout=15)
+        resp = rate_limited_get(SESSION, full_url, _config, timeout=15)
         if resp.status_code != 200:
             return False, ""
 
@@ -246,11 +164,18 @@ def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
         return False, ""
 
 
+def vergadering_is_gepubliceerd(vergadering_url: str) -> bool:
+    """Compatibiliteitshelper voor codepaden zonder vooraf gekende titel."""
+    heeft_inhoud, _ = vergadering_heeft_inhoud(vergadering_url)
+    return heeft_inhoud
+
+
 def verwerk_vergadering(
     vergadering_url: str,
     output_pad: Path,
     titel: str = "",
     document_filter: str | None = None,
+    subpagina_urls: list[str] | None = None,
 ) -> int:
     """
     Verwerk een vergadering: download alle bijhorende bestanden.
@@ -264,7 +189,7 @@ def verwerk_vergadering(
             return 0
         # Probeer titel uit de pagina-span te halen
         try:
-            resp = SESSION.get(full_url, timeout=15)
+            resp = rate_limited_get(SESSION, full_url, _config, timeout=15)
             soup = BeautifulSoup(resp.text, "lxml")
             for span in soup.find_all("span"):
                 t = span.get_text(strip=True)
@@ -302,13 +227,28 @@ def verwerk_vergadering(
             else:
                 naam_hint = f"{naam_hint}_{id_fragment}"
         gebruikte_namen.add(naam_hint)
-        succes = download_document(doc["url"], bestemming, naam_hint)
-        if succes:
-            print(f"      [OK] {naam_hint[:70]}")
-        return succes
+        
+        if "download=1" not in doc["url"]:
+            sep = "&" if "?" in doc["url"] else "?"
+            dl_url = doc["url"] + sep + "download=1"
+        else:
+            dl_url = doc["url"]
+            
+        result = base_download_document(SESSION, _config, dl_url, bestemming, naam_hint, require_pdf=False)
+        if result.success and not result.skipped:
+            print(f"      [OK] {result.path.name[:70] if result.path else naam_hint[:70]}")
+        elif not result.success:
+            print(f"      [!] Fout: {result.error}")
+        return result.success
 
-    # Vergaderingspagina zelf + subpagina's
-    for subpad in [full_url, f"{full_url}/agenda", f"{full_url}/besluitenlijst", f"{full_url}/notulen"]:
+    # Vergaderingspagina zelf + alleen gepubliceerde subpagina's uit de lijstpagina.
+    subpaden = [full_url]
+    if subpagina_urls:
+        subpaden.extend(subpagina_urls)
+    else:
+        subpaden.extend([f"{full_url}/agenda", f"{full_url}/besluitenlijst", f"{full_url}/notulen"])
+
+    for subpad in dict.fromkeys(subpaden):
         for doc in haal_file_links_van_pagina(subpad):
             if verwerk_doc(doc, output_pad):
                 downloads += 1
@@ -339,7 +279,7 @@ def haal_organen() -> list[dict]:
     try:
         # Haal zowel recente als alle vergaderingen op
         for url in [BASE_URL, f"{BASE_URL}?AlleVergaderingen=True"]:
-            resp = SESSION.get(url, timeout=15)
+            resp = rate_limited_get(SESSION, url, _config, timeout=15)
             if resp.status_code != 200:
                 continue
             soup = BeautifulSoup(resp.text, "lxml")
@@ -393,6 +333,7 @@ def haal_vergadering_links(orgaan_slug: str) -> list[dict]:
     """
     items: list[dict] = []
     gezien: set[str] = set()
+    per_url: dict[str, dict] = {}
 
     uuid_re = re.compile(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
@@ -406,7 +347,7 @@ def haal_vergadering_links(orgaan_slug: str) -> list[dict]:
         f"{BASE_URL}/{orgaan_slug}?AlleVergaderingen=True",
     ]:
         try:
-            resp = SESSION.get(url, timeout=30)
+            resp = rate_limited_get(SESSION, url, _config, timeout=30)
             if resp.status_code != 200:
                 continue
             soup = BeautifulSoup(resp.text, "lxml")
@@ -418,14 +359,25 @@ def haal_vergadering_links(orgaan_slug: str) -> list[dict]:
                 if parsed.netloc != urlparse(BASE_URL).netloc:
                     continue
                 delen = [s for s in parsed.path.strip("/").split("/") if s]
-                if (len(delen) == 2
-                        and delen[0] == orgaan_slug
-                        and uuid_re.match(delen[1])):
-                    clean_url = f"{BASE_URL}/{delen[0]}/{delen[1]}"
-                    if clean_url not in gezien:
-                        gezien.add(clean_url)
-                        titel = a.get_text(" ", strip=True)
-                        items.append({"url": clean_url, "titel": titel})
+                if len(delen) < 2 or delen[0] != orgaan_slug or not uuid_re.match(delen[1]):
+                    continue
+
+                clean_url = f"{BASE_URL}/{delen[0]}/{delen[1]}"
+                if clean_url not in per_url:
+                    titel = a.get_text(" ", strip=True)
+                    per_url[clean_url] = {
+                        "url": clean_url,
+                        "titel": titel,
+                        "subpagina_urls": [],
+                    }
+
+                if len(delen) == 2 and clean_url not in gezien:
+                    gezien.add(clean_url)
+                    items.append(per_url[clean_url])
+                elif len(delen) == 3 and delen[2] in {"agenda", "besluitenlijst", "notulen"}:
+                    sub_url = f"{clean_url}/{delen[2]}"
+                    if sub_url not in per_url[clean_url]["subpagina_urls"]:
+                        per_url[clean_url]["subpagina_urls"].append(sub_url)
 
         except Exception as e:
             print(f"  [!] Fout ophalen vergaderingen {url}: {e}")
@@ -514,6 +466,7 @@ def scrape(
                 output_pad,
                 titel=titel,
                 document_filter=document_filter,
+                subpagina_urls=item.get("subpagina_urls"),
             )
             totaal_downloads += n
             if n > 0:

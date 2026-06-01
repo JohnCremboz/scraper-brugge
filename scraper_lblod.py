@@ -308,7 +308,12 @@ def download_document(doc_url: str, output_dir: Path, filename_hint: str) -> boo
 
         bestemming = output_dir / naam
         if bestemming.exists():
-            return False  # al gedownload
+            stem = bestemming.stem
+            suffix = bestemming.suffix
+            counter = 2
+            while bestemming.exists():
+                bestemming = bestemming.parent / f"{stem}_{counter}{suffix}"
+                counter += 1
 
         bestemming.parent.mkdir(parents=True, exist_ok=True)
         with open(bestemming, "wb") as f:

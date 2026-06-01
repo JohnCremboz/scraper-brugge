@@ -257,7 +257,12 @@ def download_bestand(
         return DownloadResult(url=url, success=False, error=str(exc))
 
     if uitvoerpad.exists():
-        return DownloadResult(url=url, success=True, path=uitvoerpad, skipped=True)
+        stem = uitvoerpad.stem
+        suffix = uitvoerpad.suffix
+        counter = 2
+        while uitvoerpad.exists():
+            uitvoerpad = uitvoerpad.parent / f"{stem}_{counter}{suffix}"
+            counter += 1
 
     uitvoerpad.parent.mkdir(parents=True, exist_ok=True)
 
@@ -296,7 +301,12 @@ def sla_inhoud_op(
         return DownloadResult(url=url_hint, success=False, error=str(exc))
 
     if uitvoerpad.exists():
-        return DownloadResult(url=url_hint, success=True, path=uitvoerpad, skipped=True)
+        stem = uitvoerpad.stem
+        suffix = uitvoerpad.suffix
+        counter = 2
+        while uitvoerpad.exists():
+            uitvoerpad = uitvoerpad.parent / f"{stem}_{counter}{suffix}"
+            counter += 1
 
     uitvoerpad.parent.mkdir(parents=True, exist_ok=True)
     uitvoerpad.write_text(inhoud, encoding="utf-8")

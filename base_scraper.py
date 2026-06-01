@@ -398,14 +398,14 @@ def download_document(
         # Maak directory aan
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Skip als bestand al bestaat
+        # Zorg voor unieke bestandsnaam als pad al bestaat
         if output_path.exists():
-            return DownloadResult(
-                url=full_url,
-                success=True,
-                path=output_path,
-                skipped=True,
-            )
+            stem = output_path.stem
+            suffix = output_path.suffix
+            counter = 2
+            while output_path.exists():
+                output_path = output_path.parent / f"{stem}_{counter}{suffix}"
+                counter += 1
         
         # Download in chunks, valideer eerste chunk
         chunks = []

@@ -302,6 +302,11 @@ Beide modellen zijn nuttige output voor dit project. "Geen PV-PDF" betekent NIET
 
 - [ ] Unit tests voor base_scraper.py (sanitize_filename, robust_get, download_document)
 - [ ] Integratietests per scraper-type (mock HTTP responses)
+- [ ] **Batch test bevindingen (mei 2026)** oplossen:
+  - [x] `scraper_vlaamsbrabant.py`: mist de `--base-url` parameter in argparse (botst met aanroep vanuit `scraper_groep.py`). ✅
+  - [x] `scraper_provantwerpen.py`: mist de `--base-url` parameter in argparse (botst met aanroep vanuit `scraper_groep.py`). ✅
+  - [x] `scraper_ixelles.py`: mist de `--alle` parameter in argparse (botst met aanroep vanuit `scraper_groep.py`). ✅
+  - [x] `scraper_onlinesmartcities.py`: vergaderingen worden nu parallel verwerkt via `ThreadPoolExecutor(max_workers=4)` — elimineert sequentieel wachten bij grote gemeenten. ✅
 
 ---
 

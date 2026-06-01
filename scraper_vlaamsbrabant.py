@@ -258,6 +258,7 @@ def main() -> None:
     parser.add_argument("--maanden", type=int, default=3, help="Aantal maanden terug (standaard 3)")
     parser.add_argument("--output", "-d", type=str, default="pdfs", help="Uitvoermap (standaard: pdfs)")
     # Standaard TUI-argumenten (worden genegeerd)
+    parser.add_argument("--base-url", type=str, default="")
     parser.add_argument("--alle", action="store_true")
     parser.add_argument("--orgaan", type=str)
     parser.add_argument("--agendapunten", action="store_true")

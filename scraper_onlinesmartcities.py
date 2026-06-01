@@ -17,6 +17,7 @@ import argparse
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -205,20 +206,83 @@ def document_filter_match(doc_naam: str, document_filter: list[str] | str | None
     return any(term.lower() in naam_lower for term in document_filter)
 
 
+def zoek_html_publicaties(vergadering_url: str, ook_agendapunten: bool = False) -> list[dict]:
+    """
+    Zoek LBLOD HTML-publicatiepagina's op een vergaderingspagina.
+    Herkent links met property="lblodBesluit:linkToPublication" (besluitenlijst, notulen, ...).
+    Standaard alleen volledige vergaderingsdocumenten; met ook_agendapunten=True ook
+    individuele agendapunt- en bijkomendeagenda-items.
+    Geeft lijst van {url, naam, type} terug voor HTML→PDF-conversie.
+    """
+    pubs = []
+    try:
+        resp = SESSION.get(vergadering_url, timeout=15)
+        if resp.status_code != 200:
+            return []
+        soup = BeautifulSoup(resp.text, "lxml")
+        for link in soup.find_all("a", property="lblodBesluit:linkToPublication"):
+            href = link.get("href", "")
+            if not href:
+                continue
+            is_agendapunt = "/agendapunten/" in href or "/bijkomendeagenda/" in href
+            if is_agendapunt and not ook_agendapunten:
+                continue
+            full_url = urljoin(BASE_URL, href) if not href.startswith("http") else href
+            naam = link.get_text(strip=True) or href.rstrip("/").split("/")[-1]
+            item_id = href.rstrip("/").split("/")[-1]
+            if "/agendapunten/" in href:
+                pub_type = f"agendapunt_{item_id}"
+            elif "/bijkomendeagenda/" in href:
+                pub_type = f"bijkomendeagenda_{item_id}"
+            else:
+                pub_type = item_id  # besluitenlijst, notulen, agenda, ...
+            pubs.append({"url": full_url, "naam": naam, "type": pub_type})
+    except Exception as e:
+        logger.debug("HTML publicaties zoeken fout %s: %s", vergadering_url, e)
+    return pubs
+
+
+def sla_html_op(pub: dict, output_pad: Path) -> bool:
+    """
+    Sla een LBLOD HTML-publicatiepagina op als .html-bestand.
+    Fallback voor portalen die geen /document/ PDF-links aanbieden.
+    """
+    url = pub["url"]
+    try:
+        if "/zittingen/" in url:
+            verg_id = url.split("/zittingen/")[1].split("/")[0]
+        else:
+            verg_id = url.rstrip("/").split("/")[-1]
+        pub_type = sanitize_filename(pub.get("type", "publicatie"))
+        filename = f"{pub_type}_{verg_id}.html"
+        output_file = output_pad / filename
+        if output_file.exists():
+            return True
+        output_pad.mkdir(parents=True, exist_ok=True)
+        resp = SESSION.get(url, timeout=30)
+        resp.raise_for_status()
+        output_file.write_text(resp.text, encoding="utf-8")
+        print(f"      [HTML] {filename}")
+        return True
+    except Exception as e:
+        print(f"      [!] HTML opslaan fout {url}: {e}")
+        return False
+
+
 def verwerk_vergadering(vergadering_url: str, output_pad: Path,
                         ook_agendapunten: bool = False,
                         orgaan_filter: str | None = None,
-                        document_filter: list[str] | str | None = None) -> int:
+                        document_filter: list[str] | str | None = None,
+                        ) -> tuple[int, list[dict]]:
     """
     Verwerk een vergadering: download alle bijhorende PDFs.
-    Geeft het aantal nieuw gedownloade PDFs terug.
-    Als document_filter opgegeven is, worden alleen documenten waarvan de naam
-    één van de opgegeven termen bevat gedownload (OR-logica).
-    Geef een lijst door voor meerdere termen (bv. NOTULEN_SYNONIEMEN).
+    Geeft (aantal_downloads, html_publicaties) terug.
+    html_publicaties is niet-leeg wanneer het portaal LBLOD HTML gebruikt i.p.v. PDF-bijlagen;
+    deze worden in scrape() via Playwright naar PDF omgezet.
     """
     heeft_inhoud, titel = vergadering_heeft_inhoud(vergadering_url)
     if not heeft_inhoud:
-        return 0
+        return 0, []
 
     verg_id = vergadering_url.rstrip("/").split("/")[-1]
 
@@ -266,9 +330,15 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
                         downloads += 1
 
     if downloads == 0:
-        print(f"      (geen documenten gevonden)")
+        html_pubs = zoek_html_publicaties(vergadering_url, ook_agendapunten)
+        if html_pubs:
+            namen = ", ".join(p["naam"] for p in html_pubs)
+            print(f"      (HTML-publicatie: {namen} — wordt via Playwright naar PDF omgezet)")
+        else:
+            print(f"      (geen documenten gevonden)")
+        return 0, html_pubs
 
-    return downloads
+    return downloads, []
 
 
 def haal_organen_via_playwright() -> list[dict]:
@@ -461,7 +531,8 @@ def toon_organen():
 
 def scrape(orgaan: str | None, output_map: str, maanden: int,
            ook_agendapunten: bool = False, headless: bool = True,
-           document_filter: list[str] | str | None = None):
+           document_filter: list[str] | str | None = None,
+           max_workers: int = 4):
     """Hoofdfunctie voor het scrapen."""
     output_pad = Path(output_map)
     output_pad.mkdir(parents=True, exist_ok=True)
@@ -482,6 +553,7 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
     alle_vergadering_urls: set[str] = set()
     totaal_downloads = 0
     vergaderingen_met_docs = 0
+    html_publicaties_todo: list[dict] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
@@ -525,17 +597,32 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
 
                 print(f"    {len(vergaderingen)} vergaderingen gevonden, {len(nieuwe)} nieuw te verwerken")
 
-                for idx, verg_url in enumerate(nieuwe, 1):
-                    print(f"    ({idx}/{len(nieuwe)}) verwerken...", end="", flush=True)
-                    n = verwerk_vergadering(
-                        verg_url, output_pad, ook_agendapunten,
-                        orgaan_filter=None,
-                        document_filter=document_filter,
-                    )
-                    print(f" -> {n} PDF(s)")
-                    totaal_downloads += n
-                    if n > 0:
-                        vergaderingen_met_docs += 1
+                if nieuwe:
+                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                        futures = {
+                            pool.submit(
+                                verwerk_vergadering, verg_url, output_pad,
+                                ook_agendapunten, None, document_filter,
+                            ): verg_url
+                            for verg_url in nieuwe
+                        }
+                        for idx, fut in enumerate(as_completed(futures), 1):
+                            verg_url = futures[fut]
+                            try:
+                                n, html_pubs = fut.result()
+                            except Exception as exc:
+                                print(f"    ({idx}/{len(nieuwe)}) FOUT {verg_url}: {exc}")
+                                n, html_pubs = 0, []
+                            print(f"    ({idx}/{len(nieuwe)}) {verg_url.split('/')[-1]} -> {n} PDF(s)")
+                            totaal_downloads += n
+                            if n > 0:
+                                vergaderingen_met_docs += 1
+                            # Collect HTML publications; apply document filter
+                            if html_pubs:
+                                if document_filter:
+                                    html_pubs = [p for p in html_pubs
+                                                 if document_filter_match(p["naam"], document_filter)]
+                                html_publicaties_todo.extend(html_pubs)
 
                 if maand_nr < maanden - 1:
                     print(f"    (navigeren naar vorige maand...)")
@@ -545,8 +632,21 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
                         break
                 print()
 
+            if html_publicaties_todo:
+                print(f"[4] HTML opslaan: {len(html_publicaties_todo)} publicatie(s)...\n")
+                for pub in html_publicaties_todo:
+                    if sla_html_op(pub, output_pad):
+                        totaal_downloads += 1
+                        vergaderingen_met_docs += 1
+
         finally:
             browser.close()
+
+    lege_mappen = [p for p in output_pad.rglob("*") if p.is_dir() and not any(p.iterdir())]
+    for lege in lege_mappen:
+        lege.rmdir()
+    if lege_mappen:
+        print(f"  Lege mappen verwijderd: {len(lege_mappen)}")
 
     print(f"\n{'='*60}")
     print(f"  Klaar!")
@@ -590,6 +690,8 @@ Voorbeelden:
         help="Toon beschikbare organen en stop")
     parser.add_argument("--zichtbaar", action="store_true",
         help="Toon de browser (voor debuggen)")
+    parser.add_argument("--max-workers", type=int, default=4,
+        help="Parallelle vergadering-verwerking (standaard: 4)")
 
     args = parser.parse_args()
 
@@ -624,6 +726,7 @@ Voorbeelden:
         ook_agendapunten=args.agendapunten,
         headless=not args.zichtbaar,
         document_filter=resolved_filter,
+        max_workers=args.max_workers,
     )
 
 
