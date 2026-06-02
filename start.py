@@ -202,6 +202,9 @@ def bouw_commando(
 
     cmd = ["uv", "run", "python", script]
 
+    # Normalize sentinel strings that mean "no filter" to None
+    _effectief_orgaan = orgaan if orgaan and orgaan.lower() not in {"__alle__", "alle organen (geen filter)", "alle organen"} else None
+
     # Dedicated scrapers hebben hun URL al ingebakken.
     # Voor deliberations.be zit de gemeente-slug in het pad → volledige URL doorgeven.
     if gemeente["gemeente"] not in DEDICATED and gemeente.get("type") != "idelibe":
@@ -214,11 +217,11 @@ def bouw_commando(
         cmd += ["--gemeente", gemeente["gemeente"]]
     elif gemeente.get("type") == "irisnet":
         # irisnet heeft één scraper voor alle Brusselse gemeenten; --gemeente beperkt tot één.
-        if orgaan:
-            cmd += ["--orgaan", orgaan]
+        if _effectief_orgaan:
+            cmd += ["--orgaan", _effectief_orgaan]
         cmd += ["--gemeente", gemeente["gemeente"]]
-    elif orgaan:
-        cmd += ["--orgaan", orgaan]
+    elif _effectief_orgaan:
+        cmd += ["--orgaan", _effectief_orgaan]
     else:
         cmd += ["--alle"]
 
@@ -373,11 +376,11 @@ def stap_maanden(orgaan: str | None = None) -> int:
 
 
 def stap_doc_filter(orgaan: str | None = None) -> str | None:
-    standaard = "notulen" if orgaan and "gemeenteraad" in orgaan.lower() else None
+    standaard = "notulen" if orgaan and "gemeenteraad" in orgaan.lower() else "__alle__"
     keuze = questionary.select(
         "Wilt u alleen bepaalde documenten downloaden?",
         choices=[
-            questionary.Choice("Alle documenten",                    value=None),
+            questionary.Choice("Alle documenten",                    value="__alle__"),
             questionary.Choice("Alleen notulen / zittingsverslagen", value="notulen"),
             questionary.Choice("Alleen agenda's",                    value="agenda"),
             questionary.Choice("Alleen besluitenlijsten",            value="besluitenlijst"),
@@ -387,6 +390,8 @@ def stap_doc_filter(orgaan: str | None = None) -> str | None:
         style=STIJL,
     ).ask()
 
+    if keuze in ("__alle__", None):
+        return None
     if keuze == "__custom__":
         filter_tekst = questionary.text(
             "Voer het documentfilter in (woord dat in de bestandsnaam moet voorkomen):",

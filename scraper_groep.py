@@ -549,11 +549,14 @@ def bouw_commando(
 
     cmd = ["uv", "run", "python", scraper]
 
+    # Normalize sentinel strings that mean "no filter" to None
+    _effectief_orgaan = orgaan if orgaan and orgaan.lower() not in {"__alle__", "alle organen (geen filter)", "alle organen"} else None
+
     if type_ in {"ibabs", "idelibe"}:
         # Deze scrapers kennen geen --base-url; de gemeente wordt opgezocht via --gemeente.
         cmd += ["--gemeente", gemeente["gemeente"]]
-        if orgaan and type_ != "idelibe":
-            cmd += ["--orgaan", orgaan]
+        if _effectief_orgaan and type_ != "idelibe":
+            cmd += ["--orgaan", _effectief_orgaan]
     else:
         # Voor scrapers waar de gemeente-identiteit in het URL-pad zit (bijv. deliberations.be/{slug}
         # of publicatie.gelinkt-notuleren.vlaanderen.be/{gemeente}/{classificatie}),
@@ -567,13 +570,18 @@ def bouw_commando(
         # irisnet heeft één scraper voor alle Brusselse gemeenten; --alle zou alle 10 scrapen.
         # Geef dus altijd --gemeente mee zodat enkel de gevraagde gemeente gescraped wordt.
         elif type_ == "irisnet":
-            if orgaan:
-                cmd += ["--orgaan", orgaan]
+            if _effectief_orgaan:
+                cmd += ["--orgaan", _effectief_orgaan]
             cmd += ["--gemeente", gemeente["gemeente"]]
-        elif orgaan:
-            cmd += ["--orgaan", orgaan]
+        elif _effectief_orgaan:
+            cmd += ["--orgaan", _effectief_orgaan]
         else:
             cmd += ["--alle"]
+
+        # Voor gedeelde LBLOD-platforms (bv. celocloud.be) altijd de gemeente meegeven
+        # zodat de scraper enkel de juiste bestuurseenheid verwerkt.
+        if type_ == "lblod":
+            cmd += ["--eenheid", gemeente["gemeente"]]
 
     cmd += ["--maanden", str(maanden)]
     cmd += ["--output", output_pad]
@@ -597,6 +605,7 @@ def _run_gemeente_scraper(
     totaal: int,
     gemeente: dict,
     cmd: list[str] | None,
+    geen_inhoudfilter: bool = False,
 ) -> ScrapeResult:
     """Voer één gemeente-scraper uit en buffer stdout/stderr."""
     if cmd is None:
@@ -617,7 +626,11 @@ def _run_gemeente_scraper(
             text=True,
             encoding="utf-8",
             errors="replace",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            env={
+                **os.environ,
+                "PYTHONIOENCODING": "utf-8",
+                "SCRAPER_GEEN_INHOUDFILTER": "1" if geen_inhoudfilter else "",
+            },
             cwd=str(SCRIPT_DIR),
             check=False,
         )
@@ -684,6 +697,7 @@ def scrape_batch(
     zichtbaar: bool = False,
     pauze: float = 2.0,
     parallel: int = 1,
+    geen_inhoudfilter: bool = False,
 ) -> None:
     """Doorloop alle gemeenten en voer de juiste scraper uit voor elk."""
     totaal = len(gemeenten)
@@ -711,7 +725,7 @@ def scrape_batch(
     if parallel == 1:
         results = []
         for pos, (idx, gemeente, cmd) in enumerate(jobs, 1):
-            result = _run_gemeente_scraper(idx, totaal, gemeente, cmd)
+            result = _run_gemeente_scraper(idx, totaal, gemeente, cmd, geen_inhoudfilter)
             results.append(result)
             _print_scrape_result(result)
             if pos < len(jobs):
@@ -721,7 +735,7 @@ def scrape_batch(
         with ThreadPoolExecutor(max_workers=parallel) as executor:
             futures = []
             for pos, (idx, gemeente, cmd) in enumerate(jobs, 1):
-                futures.append(executor.submit(_run_gemeente_scraper, idx, totaal, gemeente, cmd))
+                futures.append(executor.submit(_run_gemeente_scraper, idx, totaal, gemeente, cmd, geen_inhoudfilter))
                 if pauze > 0 and pos < len(jobs):
                     time.sleep(pauze)
 
@@ -893,7 +907,7 @@ def tui_main(gemeenten: list[dict]) -> None:
         "Orgaan filteren?",
         choices=[
             questionary.Choice("Gemeenteraad", "Gemeenteraad"),
-            questionary.Choice("Alle organen (geen filter)", None),
+            questionary.Choice("Alle organen (geen filter)", "__alle__"),
             questionary.Choice("College van burgemeester en schepenen",
                                "College van burgemeester en schepenen"),
             questionary.Choice("Zelf invoeren…", "__invoer__"),
@@ -904,6 +918,8 @@ def tui_main(gemeenten: list[dict]) -> None:
 
     if orgaan_keuze == "__invoer__":
         orgaan = questionary.text("Orgaannaam:", style=STIJL).ask() or None
+    elif orgaan_keuze in ("__alle__", None):
+        orgaan = None
     else:
         orgaan = orgaan_keuze
 
@@ -931,14 +947,16 @@ def tui_main(gemeenten: list[dict]) -> None:
         "Documentfilter?",
         choices=[
             questionary.Choice("Alleen notulen", "notulen"),
-            questionary.Choice("Geen (alle documenten)", None),
+            questionary.Choice("Geen (alle documenten)", "__alle__"),
             questionary.Choice("Zelf invoeren…", "__invoer__"),
         ],
-        default="notulen" if orgaan and "gemeenteraad" in orgaan.lower() else None,
+        default="notulen" if orgaan and "gemeenteraad" in orgaan.lower() else "__alle__",
         style=STIJL,
     ).ask()
 
-    if doc_filter_keuze == "__invoer__":
+    if doc_filter_keuze in ("__alle__", None):
+        doc_filter = None
+    elif doc_filter_keuze == "__invoer__":
         doc_filter = questionary.text("Filter:", style=STIJL).ask() or None
     else:
         doc_filter = doc_filter_keuze
@@ -1083,6 +1101,12 @@ Voorbeelden:
         "--parallel", type=int, default=1,
         help="Aantal gemeenten gelijktijdig verwerken (standaard: 1)",
     )
+    parser.add_argument(
+        "--geen-inhoudfilter", action="store_true",
+        help="Schakel de mandaatinhoudfilter UIT. Standaard staat die aan "
+             "(GDPR-proportionaliteit). Gebruik dit enkel voor debugging of "
+             "als je alle documenten wil bewaren.",
+    )
 
     args = parser.parse_args()
 
@@ -1141,6 +1165,7 @@ Voorbeelden:
         zichtbaar=args.zichtbaar,
         pauze=args.pauze,
         parallel=args.parallel,
+        geen_inhoudfilter=args.geen_inhoudfilter,
     )
 
 

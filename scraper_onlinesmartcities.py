@@ -242,6 +242,37 @@ def zoek_html_publicaties(vergadering_url: str, ook_agendapunten: bool = False) 
     return pubs
 
 
+# Bekende HTML-publicatie-subpaden voor portalen zonder lblodBesluit:linkToPublication
+# (bv. Maaseik: notulen en besluitenlijst zijn pure HTML-pagina's)
+_HTML_SUBPADEN = ["notulen", "besluitenlijst"]
+
+
+def zoek_directe_html_subpaginas(vergadering_url: str) -> list[dict]:
+    """
+    Fallback voor portalen (zoals Maaseik) die notulen/besluitenlijst als pure
+    HTML-pagina's publiceren zonder lblodBesluit:linkToPublication-property.
+    Controleert bekende subpaden en retourneert die met echte inhoud.
+    """
+    pubs = []
+    for suffix in _HTML_SUBPADEN:
+        url = f"{vergadering_url.rstrip('/')}/{suffix}"
+        try:
+            resp = SESSION.get(url, timeout=15)
+            if resp.status_code != 200:
+                continue
+            soup = BeautifulSoup(resp.text, "lxml")
+            tekst = soup.get_text()
+            if "De inhoud van deze zitting is (nog) niet bekendgemaakt" in tekst:
+                continue
+            if len(tekst.strip()) < 200:
+                continue
+            naam = suffix.capitalize()
+            pubs.append({"url": url, "naam": naam, "type": suffix})
+        except Exception as e:
+            logger.debug("Directe HTML subpagina check fout %s: %s", url, e)
+    return pubs
+
+
 def sla_html_op(pub: dict, output_pad: Path) -> bool:
     """
     Sla een LBLOD HTML-publicatiepagina op als .html-bestand.
@@ -331,9 +362,12 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
 
     if downloads == 0:
         html_pubs = zoek_html_publicaties(vergadering_url, ook_agendapunten)
+        if not html_pubs:
+            # Tweede fallback: portalen (zoals Maaseik) zonder lblodBesluit-property
+            html_pubs = zoek_directe_html_subpaginas(vergadering_url)
         if html_pubs:
             namen = ", ".join(p["naam"] for p in html_pubs)
-            print(f"      (HTML-publicatie: {namen} — wordt via Playwright naar PDF omgezet)")
+            print(f"      (HTML-publicatie: {namen} — wordt opgeslagen als HTML)")
         else:
             print(f"      (geen documenten gevonden)")
         return 0, html_pubs
@@ -495,26 +529,58 @@ def activeer_orgaan_filter(page, orgaan_naam: str) -> bool:
 
 
 def navigeer_vorige_maand(page) -> str | None:
-    """Ga naar de vorige maand."""
+    """Ga naar de vorige maand. Ondersteunt twee kalender-stijlen:
+    - Klassiek (Bootstrap paginatie): li.page-item.previous a
+    - Nieuwer (tekst-link): <a href="#">vorige maand</a>  (bv. Niel)
+    """
+    # Strategie 1: Bootstrap-paginatie (de meeste portalen)
     try:
-        vorige = page.locator("li.page-item.previous a").first
-        titel_attr = vorige.get_attribute("title") or ""
+        li = page.locator("li.page-item.previous").first
+        klasse = li.get_attribute("class", timeout=3000) or ""
+        if "disabled" in klasse:
+            return None  # Begin van beschikbaar bereik
+        vorige = li.locator("a").first
+        titel_attr = vorige.get_attribute("title", timeout=3000) or ""
         vorige.click()
         page.wait_for_load_state("networkidle", timeout=15000)
         time.sleep(0.5)
         return titel_attr or huidige_maand_titel(page)
+    except Exception:
+        pass
+
+    # Strategie 2: tekst-gebaseerde "vorige maand"-link (nieuwere portalen)
+    try:
+        vorige = page.get_by_text(re.compile(r"vorige\s+maand", re.IGNORECASE)).first
+        vorige.click(timeout=5000)
+        page.wait_for_load_state("networkidle", timeout=15000)
+        time.sleep(0.5)
+        return huidige_maand_titel(page) or "?"
     except Exception as e:
         print(f"  [!] Maandnavigatie mislukt: {e}")
     return None
 
 
 def huidige_maand_titel(page) -> str:
-    """Haal de huidige maandtitel op."""
+    """Haal de huidige maandtitel op. Probeert meerdere kalender-stijlen."""
+    # Klassiek: Bootstrap paginatie
     try:
         el = page.locator("li.page-item.current a").first
-        return el.inner_text().strip()
+        tekst = el.inner_text(timeout=2000).strip()
+        if tekst:
+            return tekst
     except Exception:
-        return ""
+        pass
+
+    # Nieuwer: geselecteerde optie in maand/jaar-dropdowns (bv. Niel)
+    try:
+        maand = page.locator("select option:checked").nth(0).inner_text(timeout=2000).strip()
+        jaar = page.locator("select option:checked").nth(1).inner_text(timeout=2000).strip()
+        if maand and jaar:
+            return f"{maand} {jaar}"
+    except Exception:
+        pass
+
+    return ""
 
 
 def toon_organen():

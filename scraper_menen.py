@@ -318,7 +318,8 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
     init_session()
 
     orgaan_filter_naam = None
-    if orgaan:
+    _geen_filter_sentinels = {"alle organen (geen filter)", "alle organen", "__alle__"}
+    if orgaan and orgaan.lower() not in _geen_filter_sentinels:
         print(f"[2] Orgaan valideren: {orgaan}")
         uuid, exacte_naam = zoek_orgaan(orgaan)
         if uuid:

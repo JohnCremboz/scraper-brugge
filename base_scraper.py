@@ -78,11 +78,21 @@ class ScraperConfig:
     
     # Bestandsnaam limieten
     max_filename_length: int = 180
+
+    # Inhoudfilter: verwijder PDFs zonder mandaatgerelateerde inhoud.
+    # Staat standaard AAN voor GDPR-proportionaliteit.
+    # Opt-out via --geen-inhoudfilter in scraper_groep.py of individuele scrapers.
+    content_filter: bool = True
     
     def __post_init__(self):
         self.base_url = self.base_url.rstrip("/")
         if isinstance(self.output_dir, str):
             self.output_dir = Path(self.output_dir)
+        # Omgevingsvariabele overschrijft de default — voor opt-out zonder alle
+        # scrapers aan te passen.
+        import os
+        if os.environ.get("SCRAPER_GEEN_INHOUDFILTER", "").strip() == "1":
+            self.content_filter = False
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +330,8 @@ class DownloadResult:
     success: bool
     path: Path | None = None
     error: str | None = None
-    skipped: bool = False  # True als bestand al bestond
+    skipped: bool = False    # True als bestand al bestond
+    filtered: bool = False   # True als weggefilterd door inhoudfilter
 
 
 def download_document(
@@ -430,7 +441,21 @@ def download_document(
                 success=False,
                 error="Lege response",
             )
-        
+
+        # Inhoudfilter — controleer vóór wegschrijven om onnodige I/O te vermijden
+        if config.content_filter:
+            from mandaat_filter import is_relevant_bytes
+            content = b"".join(chunks)
+            relevant, _ = is_relevant_bytes(content)
+            if not relevant:
+                return DownloadResult(
+                    url=full_url,
+                    success=False,
+                    filtered=True,
+                    error="Gefilterd: geen mandaatrelevante inhoud",
+                )
+            chunks = [content]  # hergebruik gebufferde bytes
+
         # Schrijf atomisch (naar tijdelijk bestand, dan rename)
         temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
         try:

@@ -367,6 +367,7 @@ def scrape(
     maanden: int,
     document_filter: list[str] | str | None = None,
     alle: bool = False,
+    eenheid_filter: str | None = None,
 ):
     """Hoofdfunctie voor het scrapen."""
     output_pad = Path(output_map)
@@ -393,6 +394,12 @@ def scrape(
     if not eenheden:
         print("    [!] Geen bestuurseenheden gevonden. Controleer de URL.")
         sys.exit(1)
+    if eenheid_filter:
+        zoek = eenheid_filter.lower()
+        eenheden = [e for e in eenheden if zoek in e["naam"].lower()]
+        if not eenheden:
+            print(f"    [!] Geen bestuurseenheid gevonden die '{eenheid_filter}' bevat.")
+            sys.exit(1)
     print(f"    OK - {len(eenheden)} bestuurseenhe(i)d(en) gevonden")
     for e in eenheden:
         print(f"      - {e['naam']}")
@@ -513,6 +520,9 @@ Voorbeelden:
                         help="Download alleen verslagdocumenten: notulen, verslag, "
                              "besluitenlijst, uittreksel, dagorde "
                              "(ongeacht de exacte term die het portaal gebruikt)")
+    parser.add_argument("--eenheid", "-e", type=str, default=None,
+                        help="Filter op bestuurseenheid (deel-match, bv. 'Kortenaken'). "
+                             "Nuttig voor gedeelde platforms zoals celocloud.be.")
     parser.add_argument("--lijst-organen", action="store_true",
                         help="Toon beschikbare organen en stop")
     # Compatibiliteit met scraper_groep.py
@@ -557,6 +567,7 @@ Voorbeelden:
         maanden=args.maanden,
         document_filter=resolved_filter,
         alle=args.alle,
+        eenheid_filter=args.eenheid,
     )
 
 
