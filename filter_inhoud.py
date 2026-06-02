@@ -88,7 +88,7 @@ def main() -> None:
             resultaten.append(future.result())
             verwerkt += 1
             if verwerkt % 500 == 0 or verwerkt == totaal:
-                print(f"  {verwerkt:>6}/{totaal}  verwerkt...", end="\r")
+                print(f"  {verwerkt:>6}/{totaal}  verwerkt...", end="\r", flush=True)
 
     print()
 
