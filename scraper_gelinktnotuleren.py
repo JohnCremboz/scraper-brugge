@@ -271,6 +271,14 @@ def download_bestand(
         if r.status_code != 200:
             return DownloadResult(url=url, success=False, error=f"HTTP {r.status_code}")
 
+        if _config and _config.content_filter:
+            from mandaat_filter import is_relevant
+            if not is_relevant(r.text):
+                return DownloadResult(
+                    url=url, success=False, filtered=True,
+                    error="Gefilterd: geen mandaatrelevante inhoud",
+                )
+
         tijdelijk = uitvoerpad.with_suffix(".tmp")
         try:
             tijdelijk.write_bytes(r.content)

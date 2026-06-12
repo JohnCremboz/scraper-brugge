@@ -56,7 +56,7 @@ from rich import box
 import questionary
 from questionary import Style
 
-CSV_PAD = Path(__file__).parent / "simba-source.csv"
+CSV_PAD = Path(__file__).parent / "simba-source.csv"  # overschrijfbaar via --csv
 SCRIPT_DIR = Path(__file__).parent
 
 console = Console()
@@ -518,11 +518,14 @@ def groepeer(gemeenten: list[dict]) -> dict[str, list[dict]]:
 # ---------------------------------------------------------------------------
 
 def sanitize_slug(naam: str) -> str:
-    """Zet een gemeentenaam om naar een bestandssysteem-veilige slug."""
-    naam = naam.replace(" ", "_").replace("/", "_").replace("'", "")
-    naam = re.sub(r"[^a-zA-Z0-9_\-]", "_", naam)
-    naam = re.sub(r"_+", "_", naam)
-    return naam.strip("_")[:60] or "gemeente"
+    """Zet een gemeentenaam om naar een bestandssysteem-veilige mapnaam.
+    Spaties worden bewaard (Windows ondersteunt ze); enkel tekens die echt
+    onveilig zijn voor bestandssystemen worden vervangen."""
+    naam = naam.replace("/", "-").replace("\\", "-").replace(":", "-")
+    naam = naam.replace("*", "-").replace("?", "").replace('"', "")
+    naam = naam.replace("<", "").replace(">", "").replace("|", "-")
+    naam = re.sub(r"\s+", " ", naam).strip()
+    return naam[:60] or "gemeente"
 
 
 def bouw_commando(
@@ -1102,6 +1105,10 @@ Voorbeelden:
         help="Aantal gemeenten gelijktijdig verwerken (standaard: 1)",
     )
     parser.add_argument(
+        "--csv", type=str, default=None,
+        help="Alternatief CSV-bestand i.p.v. simba-source.csv",
+    )
+    parser.add_argument(
         "--geen-inhoudfilter", action="store_true",
         help="Schakel de mandaatinhoudfilter UIT. Standaard staat die aan "
              "(GDPR-proportionaliteit). Gebruik dit enkel voor debugging of "
@@ -1113,6 +1120,9 @@ Voorbeelden:
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"
 
+    global CSV_PAD
+    if args.csv:
+        CSV_PAD = Path(args.csv)
     gemeenten = lees_csv()
 
     # ── --toon-groepen ────────────────────────────────────────────────────

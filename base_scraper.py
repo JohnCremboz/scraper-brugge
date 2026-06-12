@@ -364,7 +364,20 @@ def download_document(
             success=False,
             error="Ongeldige document-URL",
         )
-    
+
+    # Skip-existing check op basis van filename_hint — vóór HTTP-request
+    # zodat al-gedownloade bestanden geen extra request veroorzaken.
+    if filename_hint:
+        _hint_clean = sanitize_filename(filename_hint)
+        _hint_path = output_dir / _hint_clean
+        if _hint_path.exists():
+            return DownloadResult(
+                url=full_url,
+                success=True,
+                path=_hint_path,
+                skipped=True,
+            )
+
     try:
         resp = rate_limited_get(session, full_url, config, stream=True, allow_redirects=True)
         
@@ -377,7 +390,17 @@ def download_document(
         
         # Bepaal bestandsnaam
         filename = _extract_filename(resp, filename_hint, doc_url)
-        
+
+        # Blokkeer audio/video — nooit relevant voor mandaatonderzoek
+        _GEBLOKKEERDE_EXTENSIES = {".mp3", ".wav", ".mp4", ".avi", ".mkv", ".ogg", ".flac"}
+        if any(filename.lower().endswith(ext) for ext in _GEBLOKKEERDE_EXTENSIES):
+            return DownloadResult(
+                url=full_url,
+                success=False,
+                filtered=True,
+                error=f"Geblokkeerd bestandstype: {Path(filename).suffix}",
+            )
+
         # Voeg extensie toe indien nodig
         if "." not in filename[-6:]:
             content_type = resp.headers.get("content-type", "")

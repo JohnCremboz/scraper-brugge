@@ -29,3 +29,23 @@ Thumbs.db
 
 # Temp files
 *.tmp
+
+# Claude Code session data
+.claude/
+
+# Run logs and batch outputs
+*.log
+*-batch.csv
+*-dry.csv
+*-final.csv
+*-run.log
+removed*.csv
+*_log.csv
+suspects_*.csv
+*-test.log
+*-test*.log
+*-run*.log
+scraped.txt
+groepen.txt
+*_peek.txt
+*_check.txt

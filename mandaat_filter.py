@@ -19,8 +19,11 @@ MANDAAT_TERMEN: list[str] = [
     "aanduiding",
     "aangewezen",
     "aangesteld",
+    "aanstelling",
     "afgevaardigde",
+    "afvaardiging",
     "vertegenwoordiger",
+    "voordracht",
     "kandidaatstelling",
     "volmacht",
     "benoeming",
@@ -30,11 +33,16 @@ MANDAAT_TERMEN: list[str] = [
     "intercommunale",
     "intergemeentelijk",
     "autonoom gemeentebedrijf",
+    "autonoom provinciebedrijf",
+    "zorgbedrijf",
     "politiezone",
+    "brandweerzone",
+    "hulpverleningszone",
     "raad van bestuur",
     "algemene vergadering",
     "welzijnsvereniging",
-    "hulpverleningszone",
+    "eerstelijnszone",
+    "elz ",  # afkorting Eerstelijnszone, spatie voorkomt valse matches
 
     # Bezoldiging
     "presentiegeld",
@@ -85,6 +93,7 @@ MANDAAT_TERMEN: list[str] = [
     "nommé",
     "délégué",
     "représentant",
+    "remplacement",
     "candidature",
     "procuration",
     "nomination",
@@ -97,9 +106,6 @@ MANDAAT_TERMEN: list[str] = [
     "zone de police",
     "conseil d'administration",
     "assemblée générale",
-    "cpas",
-    "conseil communal",
-    "collège communal",
     "zone de secours",
     "association d'aide sociale",
 
@@ -108,9 +114,6 @@ MANDAAT_TERMEN: list[str] = [
     "rémunération",
     "indemnité de mandat",
     "indemnité de fonction",
-
-    # Mandat
-    "mandat",
 
     # Intercommunales wallonnes
     "ores",

@@ -147,8 +147,36 @@ GEMEENTEN: dict[str, dict] = {
     "www.oostkamp.be": {
         "naam": "Oostkamp",
         "listing_pad": "/bekendmakingen/categorie/1/bestuursorganen",
+        "pagina_param": "?sort=0&page={n}",
         "vergadering_re": re.compile(
-            r"^/bekendmakingen/detail/\d+/gemeenteraad"
+            r"^/bekendmakingen/detail/\d+/(gemeenteraad|ocmw-raad)"
+        ),
+    },
+    "www.dessel.be": {
+        "naam": "Dessel",
+        "listing_pad": "/agendaplusnotulen/overzicht/3041/gemeenteraad",
+        "vergadering_re": re.compile(r"^/agendaplusnotulen/detail/\d+/gemeenteraad$"),
+    },
+    "www.lille.be": {
+        "naam": "Lille",
+        "listing_pad": "/bekendmakingen/categorie/22/gemeenteraad?sortcat=24",
+        "vergadering_re": re.compile(r"^/notulen-gemeenteraad-\d{1,2}-[a-z]+-\d{4}$", re.IGNORECASE),
+    },
+    "www.gemeentepelt.be": {
+        "naam": "Pelt",
+        "listing_pad": "/agendanotulen/index/1/gemeenteraad",
+        # Twee URL-vormen in gebruik: oudere met /agendanotulen/detail/<id>/gemeenteraad-...
+        # en recentere directe slug /gemeenteraad-DD-maandnaam-YYYY
+        "vergadering_re": re.compile(
+            r"^/(?:agendanotulen/detail/\d+/)?gemeenteraad-\d{1,2}-[a-z]+-\d{4}$", re.IGNORECASE
+        ),
+    },
+    "www.oudenburg.be": {
+        "naam": "Oudenburg",
+        "listing_pad": "/agenda-en-verslagen?category=31",
+        "pagina_param": "&page={n}",
+        "vergadering_re": re.compile(
+            r"^/verslag-van-de-gemeenteraad-van-\d", re.IGNORECASE
         ),
     },
 }
@@ -237,6 +265,21 @@ def haal_vergaderingen(
             r = _get(_absolute(jp))
             if r and r.status_code == 200:
                 vergadering_paden.extend(_links_van_pagina(r.text, vergadering_re))
+    elif config.get("pagina_param"):
+        # Gepagineerde listing: blader door pagina's tot er geen nieuwe links meer zijn
+        pagina_param = config["pagina_param"]
+        vergadering_paden = []
+        gezien: set[str] = set()
+        for n in range(1, 200):
+            pagina_url = listing_url + pagina_param.format(n=n)
+            r = _get(pagina_url)
+            if not r or r.status_code != 200:
+                break
+            nieuwe = [p for p in _links_van_pagina(r.text, vergadering_re) if p not in gezien]
+            if not nieuwe:
+                break
+            gezien.update(nieuwe)
+            vergadering_paden.extend(nieuwe)
     else:
         vergadering_paden = _links_van_pagina(html, vergadering_re)
 

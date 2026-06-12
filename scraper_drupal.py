@@ -153,6 +153,42 @@ GEMEENTEN: dict[str, dict] = {
         # Datum zit in <time class="datetime" datetime="YYYY-MM-DD..."> in elke kaart
         "kaart_klassen": ["publication", "conseil"],
     },
+    "www.scherpenheuvel-zichem.be": {
+        "naam": "Scherpenheuvel-Zichem",
+        "listing_pad": (
+            "/stad-en-bestuur/bekendmakingen/reglementen-besluiten-en-zittingsdocumenten"
+            "?f%5B0%5D=reglementen-besluiten-en-zittingsdocumenten-orgaan%3A374"
+            "&sort_by=paddle_publication_date&sort_order=DESC"
+        ),
+        "vergadering_re": re.compile(
+            r"^/gemeenteraad-\d{1,2}-[a-z]+-\d{4}-(?:agenda|notulen|besluitenlijst)$",
+            re.IGNORECASE,
+        ),
+        # Oudere documenten staan op /sites/default/files/, recentere zijn
+        # gepubliceerd via het LBLOD-platform (GetPublication?filename=...pdf)
+        "pdf_re": re.compile(
+            r"(?:/sites/[^/]+/files/[^\"'?]*\.pdf|GetPublication\?filename=[^\"']*\.pdf)",
+            re.IGNORECASE,
+        ),
+        "pagina_max": 5,
+    },
+    "www.oudenaarde.be": {
+        "naam": "Oudenaarde",
+        "listing_pad": (
+            "/nl/bestuur/bestuursorganen/gemeenteraad-en-raad-voor-maatschappelijk-welzijn/"
+            "vergaderingen"
+        ),
+        # PDFs op /sites/default/files/cobra/Agenda/<jaar>/<id>.pdf — geen datum in pad,
+        # listing-pagina toont de volledige geschiedenis zonder paginering.
+    },
+    "www.zoersel.be": {
+        "naam": "Zoersel",
+        "listing_pad": "/gemeente-en-bestuur/bestuur/gemeenteraad",
+        "vergadering_re": re.compile(
+            r"^/rapporten/(?:agenda|verslag|besluiten)-gemeenteraad-\d{1,2}-[a-z]+-\d{4}$",
+            re.IGNORECASE,
+        ),
+    },
     "www.provincedeliege.be": {
         "naam": "Provincie Luik - Liège",
         "listing_pad": "/fr/conseil/pvcra",

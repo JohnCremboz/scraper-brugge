@@ -170,6 +170,76 @@ def vergadering_is_gepubliceerd(vergadering_url: str) -> bool:
     return heeft_inhoud
 
 
+def _html_naar_pdf(html_tekst: str, pdf_pad: Path) -> bool:
+    """Render HTML als PDF via PyMuPDF Story. Strips scripts/nav voor cleaner output."""
+    import fitz
+
+    soup_clean = BeautifulSoup(html_tekst, "lxml")
+    for tag in soup_clean.find_all(["script", "style", "nav", "header", "footer", "iframe"]):
+        tag.decompose()
+    body = soup_clean.find("main") or soup_clean.find("article") or soup_clean.find("body")
+    inhoud = str(body) if body else html_tekst
+    # Expliciete UTF-8 declaratie zodat PyMuPDF speciale tekens correct verwerkt
+    schone_html = f'<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>{inhoud}</body></html>'
+
+    story = fitz.Story(html=schone_html)
+    writer = fitz.DocumentWriter(str(pdf_pad))
+    mediabox = fitz.paper_rect("a4")
+    where = mediabox + (50, 50, -50, -50)
+    more = True
+    while more:
+        device = writer.begin_page(mediabox)
+        more, _ = story.place(where)
+        story.draw(device)
+        writer.end_page()
+    writer.close()
+    return True
+
+
+def sla_notulen_als_pdf_op(notulen_url: str, output_pad: Path, vergadering_titel: str) -> bool:
+    """
+    Haal de notulen-HTML op, filter op mandaatrelevantie en sla op als PDF.
+    Geeft True terug als een bestand opgeslagen of al aanwezig was.
+    """
+    full_url = urljoin(BASE_URL, notulen_url) if not notulen_url.startswith("http") else notulen_url
+
+    try:
+        resp = rate_limited_get(SESSION, full_url, _config, timeout=30)
+        if resp.status_code != 200:
+            return False
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        tekst = soup.get_text(" ", strip=True)
+
+        # Pagina niet gepubliceerd of leeg
+        if "nog niet bekendgemaakt" in tekst or len(tekst.strip()) < 200:
+            return False
+
+        # Bestandsnaam op basis van vergaderingstitel
+        veilige_titel = re.sub(r'[\\/*?:"<>|]', '', vergadering_titel)[:60].strip()
+        bestandsnaam = sanitize_filename(f"notulen_{veilige_titel}.pdf")
+        output_pad.mkdir(parents=True, exist_ok=True)
+        bestand = output_pad / bestandsnaam
+
+        if bestand.exists():
+            return True
+
+        # Content filter op tekst
+        if _config and _config.content_filter:
+            from mandaat_filter import is_relevant
+            if not is_relevant(tekst):
+                return False
+
+        if _html_naar_pdf(resp.text, bestand):
+            print(f"      [OK] {bestandsnaam} (notulen -> PDF)")
+            return True
+        return False
+
+    except Exception as e:
+        print(f"      [!] Fout notulen PDF: {e}")
+        return False
+
+
 def verwerk_vergadering(
     vergadering_url: str,
     output_pad: Path,
@@ -227,13 +297,13 @@ def verwerk_vergadering(
             else:
                 naam_hint = f"{naam_hint}_{id_fragment}"
         gebruikte_namen.add(naam_hint)
-        
+
         if "download=1" not in doc["url"]:
             sep = "&" if "?" in doc["url"] else "?"
             dl_url = doc["url"] + sep + "download=1"
         else:
             dl_url = doc["url"]
-            
+
         result = base_download_document(SESSION, _config, dl_url, bestemming, naam_hint, require_pdf=False)
         if result.success and not result.skipped:
             print(f"      [OK] {result.path.name[:70] if result.path else naam_hint[:70]}")
@@ -248,10 +318,15 @@ def verwerk_vergadering(
     else:
         subpaden.extend([f"{full_url}/agenda", f"{full_url}/besluitenlijst", f"{full_url}/notulen"])
 
+    notulen_url = f"{full_url}/notulen"
     for subpad in dict.fromkeys(subpaden):
         for doc in haal_file_links_van_pagina(subpad):
             if verwerk_doc(doc, output_pad):
                 downloads += 1
+
+    # Notulen opslaan als PDF (bevat de eigenlijke besluiten, ook zonder PDF-bijlagen)
+    if sla_notulen_als_pdf_op(notulen_url, output_pad, titel):
+        downloads += 1
 
     if downloads == 0:
         print(f"      (geen documenten gevonden)")
@@ -461,9 +536,12 @@ def scrape(
                 tqdm.write(f"  (drempelDatum bereikt bij '{titel}', stop)")
                 break
 
+            datum_str = datum.strftime("%Y-%m-%d") if datum else "onbekend"
+            vergadering_pad = output_pad / datum_str
+
             n = verwerk_vergadering(
                 verg_url,
-                output_pad,
+                vergadering_pad,
                 titel=titel,
                 document_filter=document_filter,
                 subpagina_urls=item.get("subpagina_urls"),
