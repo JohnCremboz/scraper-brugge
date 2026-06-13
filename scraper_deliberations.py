@@ -19,26 +19,26 @@ Gebruik:
 """
 
 import argparse
+import asyncio
 import csv
 import json
 import sys
-import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlencode, urlparse
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-from tqdm import tqdm
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     sanitize_filename,
-    robust_get,
     logger,
-    download_document,
     DownloadResult,
 )
 
@@ -47,7 +47,7 @@ from base_scraper import (
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://deliberations.be"
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
 _FRENCH_MONTHS = {
@@ -57,19 +57,38 @@ _FRENCH_MONTHS = {
 }
 
 
-def init_session(base_url: str | None = None) -> None:
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session(base_url: str | None = None) -> None:
     """Initialiseer HTTP-sessie."""
     global SESSION, _config, BASE_URL
+    if SESSION is not None:
+        await SESSION.close()
     if base_url:
         BASE_URL = base_url.rstrip("/")
     _config = ScraperConfig(base_url=BASE_URL, rate_limit_delay=0.3)
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
 
 
-def _get(url: str) -> requests.Response | None:
+async def _get(url: str) -> _Resp | None:
     """GET helper — pad wordt relatief aan BASE_URL opgelost."""
+    if SESSION is None or _config is None:
+        return None
     full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
-    return robust_get(SESSION, full_url, retries=3, timeout=30)
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            full_url, timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", full_url, exc)
+        return None
 
 
 def _parse_french_date(datum_str: str) -> str | None:
@@ -128,7 +147,7 @@ def haal_gemeenten_lijst() -> list[str]:
 # Items ophalen via faceted query (beslissingen + publicaties)
 # ---------------------------------------------------------------------------
 
-_PAGE_SIZE = 20  # server ignores b_size, always returns 20
+_PAGE_SIZE = 20
 
 
 def _parse_card(item, gemeente: str) -> dict | None:
@@ -148,7 +167,6 @@ def _parse_card(item, gemeente: str) -> dict | None:
         if not label_elem:
             continue
         label_text = label_elem.get_text(strip=True)
-        # Value is in a <span> or <a> sibling — get text from row minus the label
         label_elem.extract()
         value_text = row.get_text(strip=True)
         if label_text and value_text:
@@ -169,7 +187,7 @@ def _parse_card(item, gemeente: str) -> dict | None:
     }
 
 
-def _haal_items(
+async def _haal_items(
     gemeente: str,
     endpoint: str,
     min_datum: date | None = None,
@@ -187,12 +205,10 @@ def _haal_items(
 
     while True:
         params = {"b_size": str(_PAGE_SIZE), "b_start": str(b_start)}
-        resp = _get(base_url + "?" + urlencode(params))
+        resp = await _get(base_url + "?" + urlencode(params))
         if resp is None or not resp.text.strip():
             break
 
-        # Plone login wall: some municipalities gate their decisions endpoint.
-        # The server returns HTTP 200 with an auth form instead of data.
         if "cookies ne sont pas activés" in resp.text or "fieldname-__ac_name" in resp.text:
             logger.warning("Login wall op %s/%s — niet publiek toegankelijk", gemeente, endpoint)
             break
@@ -223,22 +239,20 @@ def _haal_items(
     return result
 
 
-def haal_beslissingen(gemeente: str, min_datum: date | None = None) -> list[dict]:
-    return _haal_items(gemeente, "decisions", min_datum)
+async def haal_beslissingen(gemeente: str, min_datum: date | None = None) -> list[dict]:
+    return await _haal_items(gemeente, "decisions", min_datum)
 
 
-def haal_publicaties(gemeente: str, min_datum: date | None = None) -> list[dict]:
-    return _haal_items(gemeente, "publications", min_datum)
+async def haal_publicaties(gemeente: str, min_datum: date | None = None) -> list[dict]:
+    return await _haal_items(gemeente, "publications", min_datum)
 
 
 # ---------------------------------------------------------------------------
-# Zoek documenten op item pagina
+# Zoek documenten op item pagina via Playwright
 # ---------------------------------------------------------------------------
 
-_playwright_browser = None
-
-
-def _verwerk_item_pagina(
+async def _verwerk_item_pagina(
+    browser,
     url: str,
     fallback_pdf_path: "Path | None" = None,
 ) -> "tuple[list[dict], bool]":
@@ -247,17 +261,16 @@ def _verwerk_item_pagina(
     Als geen gevonden en fallback_pdf_path opgegeven: sla pagina op als PDF.
     Returns: (documenten, pdf_gegenereerd)
     """
-    global _playwright_browser
     page = None
     try:
-        page = _playwright_browser.new_page()
-        page.goto(url, wait_until="networkidle", timeout=20000)
-        html = page.content()
+        page = await browser.new_page()
+        await page.goto(url, wait_until="networkidle", timeout=20000)
+        html = await page.content()
     except PlaywrightTimeout:
         logger.warning("Playwright timeout: %s", url)
         if page:
             try:
-                page.close()
+                await page.close()
             except Exception:
                 pass
         return [], False
@@ -265,7 +278,7 @@ def _verwerk_item_pagina(
         logger.warning("Playwright fout op %s: %s", url, exc)
         if page:
             try:
-                page.close()
+                await page.close()
             except Exception:
                 pass
         return [], False
@@ -306,23 +319,22 @@ def _verwerk_item_pagina(
     if not documenten and fallback_pdf_path is not None and not fallback_pdf_path.exists():
         try:
             fallback_pdf_path.parent.mkdir(parents=True, exist_ok=True)
-            page.pdf(path=str(fallback_pdf_path), format="A4")
+            await page.pdf(path=str(fallback_pdf_path), format="A4")
             pdf_gegenereerd = True
         except Exception as exc:
             logger.warning("HTML→PDF mislukt voor %s: %s", url, exc)
 
     try:
-        page.close()
+        await page.close()
     except Exception:
         pass
 
     return documenten, pdf_gegenereerd
 
 
-def zoek_documenten(item_url: str) -> list[dict]:
-    """Zoek documenten (PDF) op een item detail pagina via Playwright."""
-    docs, _ = _verwerk_item_pagina(item_url)
-    return docs
+def zoek_documenten_sync(item_url: str) -> list[dict]:
+    """Compat: zoek documenten op item pagina (wordt niet gebruikt in async flow)."""
+    return []
 
 
 def _bouw_fallback_pdf_pad(output_dir: "Path", item: dict) -> "Path":
@@ -336,11 +348,12 @@ def _bouw_fallback_pdf_pad(output_dir: "Path", item: dict) -> "Path":
     titel = sanitize_filename(item["titel"][:80])
     return output_dir / datum / f"{punt_nr:03d}_{titel}.pdf"
 
+
 # ---------------------------------------------------------------------------
 # Hoofdlogica - Scrape gemeente
 # ---------------------------------------------------------------------------
 
-def scrape_gemeente(
+async def scrape_gemeente(
     gemeente: str,
     output_dir: Path,
     maanden: int | None = None,
@@ -355,8 +368,6 @@ def scrape_gemeente(
         html_naar_pdf: Als True, genereer PDF van HTML voor beslissingen zonder bijlage.
     Returns: (aantal_items, aantal_documenten)
     """
-    global _playwright_browser
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
     from dateutil.relativedelta import relativedelta
@@ -367,11 +378,11 @@ def scrape_gemeente(
     logger.info("Gemeente: %s — %s/%s", gemeente, BASE_URL, gemeente)
 
     logger.info("[1] Beslissingen ophalen...")
-    beslissingen = haal_beslissingen(gemeente, min_datum)
+    beslissingen = await haal_beslissingen(gemeente, min_datum)
     logger.info("    %d beslissingen gevonden", len(beslissingen))
 
     logger.info("[2] Publicaties ophalen...")
-    publicaties = haal_publicaties(gemeente, min_datum)
+    publicaties = await haal_publicaties(gemeente, min_datum)
     logger.info("    %d publicaties gevonden", len(publicaties))
 
     alle_items = beslissingen + publicaties
@@ -395,51 +406,66 @@ def scrape_gemeente(
     if download_pdfs:
         logger.info("[3] Documenten zoeken via Playwright...")
 
-        pw_ctx = sync_playwright().start()
-        _playwright_browser = pw_ctx.chromium.launch(headless=True)
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
 
-        try:
-            for item in tqdm(alle_items, desc="Items controleren"):
-                fallback_path = (
-                    _bouw_fallback_pdf_pad(output_dir, item) if html_naar_pdf else None
-                )
-                documenten, pdf_gegenereerd = _verwerk_item_pagina(item["url"], fallback_path)
+            try:
+                alle_download_docs: list[dict] = []
 
-                if pdf_gegenereerd:
-                    doc_count += 1
-                    logger.info("      [HTML→PDF] %s", fallback_path.name)
-                    item["documenten"] = [{
-                        "naam": fallback_path.name,
-                        "url": item["url"],
-                        "local_file": str(fallback_path),
-                        "type": "html-pdf",
-                    }]
-                elif documenten:
-                    doc_types = ", ".join(set(d["type"] for d in documenten))
-                    logger.info("    %d document(en) gevonden (%s): %s",
-                                len(documenten), doc_types, item["titel"][:50])
-                    item["documenten"] = []
+                for item in alle_items:
+                    fallback_path = (
+                        _bouw_fallback_pdf_pad(output_dir, item) if html_naar_pdf else None
+                    )
+                    documenten, pdf_gegenereerd = await _verwerk_item_pagina(
+                        browser, item["url"], fallback_path
+                    )
 
-                    for doc in documenten:
-                        if SESSION and _config:
-                            result = download_document(
-                                SESSION, _config,
-                                doc["url"], output_dir, doc["naam"],
-                                require_pdf=(doc["type"] == "pdf"),
-                            )
-                            if result.success and not result.skipped:
-                                doc_count += 1
-                                logger.info("      [%s] %s", doc["type"].upper(), result.path.name)
-                            item["documenten"].append({
-                                "naam": doc["naam"],
+                    if pdf_gegenereerd:
+                        doc_count += 1
+                        logger.info("      [HTML→PDF] %s", fallback_path.name)
+                        item["documenten"] = [{
+                            "naam": fallback_path.name,
+                            "url": item["url"],
+                            "local_file": str(fallback_path),
+                            "type": "html-pdf",
+                        }]
+                    elif documenten:
+                        doc_types = ", ".join(set(d["type"] for d in documenten))
+                        logger.info("    %d document(en) gevonden (%s): %s",
+                                    len(documenten), doc_types, item["titel"][:50])
+                        item["documenten"] = []
+                        for doc in documenten:
+                            alle_download_docs.append({
                                 "url": doc["url"],
-                                "local_file": result.path.name if result.success else None,
-                                "type": doc["type"],
+                                "naam": doc["naam"],
+                                "_type": doc["type"],
+                                "_item": item,
                             })
-        finally:
-            _playwright_browser.close()
-            pw_ctx.stop()
-            _playwright_browser = None
+            finally:
+                await browser.close()
+
+            # Parallel downloaden
+            if alle_download_docs:
+                resultaten = await async_download_documents_parallel(
+                    SESSION, _config,
+                    [{"url": d["url"], "naam": d["naam"]} for d in alle_download_docs],
+                    output_dir,
+                    require_pdf=False,
+                )
+                for doc_entry, result in zip(alle_download_docs, resultaten):
+                    item_ref = doc_entry["_item"]
+                    if "documenten" not in item_ref:
+                        item_ref["documenten"] = []
+                    if result.success and not result.skipped:
+                        doc_count += 1
+                        logger.info("      [%s] %s", doc_entry["_type"].upper(),
+                                    result.path.name if result.path else "?")
+                    item_ref["documenten"].append({
+                        "naam": doc_entry["naam"],
+                        "url": doc_entry["url"],
+                        "local_file": result.path.name if result.success else None,
+                        "type": doc_entry["_type"],
+                    })
 
         if doc_count == 0:
             logger.warning("Geen documenten gevonden/gedownload voor %s", gemeente)
@@ -479,20 +505,18 @@ Voorbeelden:
     parser.add_argument("--orgaan", type=str,
                         help="Orgaan — deliberations.be heeft geen organen, wordt genegeerd")
     parser.add_argument("--maanden", type=int, default=None,
-                        help="Periode in maanden (wordt omgezet naar --max-items)")
+                        help="Periode in maanden")
     parser.add_argument("--output", type=str, default=None,
                         help="Uitvoermap (alias voor --output-dir)")
     parser.add_argument("--document-filter", type=str,
                         help="Documentfilter — wordt genegeerd voor deliberations.be")
-    parser.add_argument("--agendapunten", action="store_true",
-                        help="Individuele besluiten — wordt genegeerd voor deliberations.be")
-    parser.add_argument("--zichtbaar", action="store_true",
-                        help="Browser zichtbaar — deliberations.be gebruikt geen browser")
+    parser.add_argument("--agendapunten", action="store_true")
+    parser.add_argument("--zichtbaar", action="store_true")
 
     parser.add_argument("--gemeente", "-g", type=str,
                         help="Gemeente-slug (bijv. liege); gebruik --lijst voor opties")
     parser.add_argument("--alle", action="store_true",
-                        help="Scrape alle deliberations.be gemeenten (zonder --base-url)")
+                        help="Scrape alle deliberations.be gemeenten")
     parser.add_argument("--lijst", action="store_true",
                         help="Toon lijst van beschikbare gemeenten")
     parser.add_argument("--output-dir", "-o", type=str, default="pdfs",
@@ -512,68 +536,81 @@ Voorbeelden:
     if args.output and args.output_dir == "pdfs":
         args.output_dir = args.output
 
-    init_session()
-
-    if args.lijst:
-        gemeenten = haal_gemeenten_lijst()
-        if not gemeenten:
-            logger.error("Geen gemeenten gevonden in CSV")
-            return
-        for i, gemeente in enumerate(gemeenten, 1):
-            print(f"  {i:3}. {gemeente}")
-        print(f"\n   Totaal: {len(gemeenten)} gemeenten")
-        return
-
-    if not args.gemeente and not args.alle:
-        logger.error("Geef --gemeente, --base-url of --alle op (gebruik --lijst voor opties)")
-        sys.exit(1)
-
-    output_dir = Path(args.output_dir)
     download_pdfs = not args.no_pdfs
     html_naar_pdf = not args.no_html_pdf
     maanden = args.maanden
 
-    if args.gemeente:
-        totaal_items, totaal_docs = scrape_gemeente(
-            args.gemeente,
-            output_dir / args.gemeente,
-            maanden,
-            download_pdfs,
-            html_naar_pdf,
-        )
-        logger.info("Klaar — items: %d, documenten: %d", totaal_items, totaal_docs)
-        return
+    async def _run() -> None:
+        await init_session(args.base_url)
 
-    if args.alle:
-        gemeenten = haal_gemeenten_lijst()
-        if not gemeenten:
-            logger.error("Geen gemeenten gevonden in simba-source.csv")
+        if args.lijst:
+            gemeenten = haal_gemeenten_lijst()
+            if not gemeenten:
+                logger.error("Geen gemeenten gevonden in CSV")
+                if SESSION is not None:
+                    await SESSION.close()
+                return
+            for i, gemeente in enumerate(gemeenten, 1):
+                print(f"  {i:3}. {gemeente}")
+            print(f"\n   Totaal: {len(gemeenten)} gemeenten")
+            if SESSION is not None:
+                await SESSION.close()
+            return
+
+        if not args.gemeente and not args.alle:
+            logger.error("Geef --gemeente, --base-url of --alle op (gebruik --lijst voor opties)")
+            if SESSION is not None:
+                await SESSION.close()
             sys.exit(1)
 
-        logger.info("Scraping %d gemeenten...", len(gemeenten))
+        output_dir = Path(args.output_dir)
 
-        totaal_items = 0
-        totaal_docs = 0
-
-        for i, gemeente in enumerate(gemeenten, 1):
-            logger.info("[%d/%d] %s", i, len(gemeenten), gemeente)
-            items, docs = scrape_gemeente(
-                gemeente,
-                output_dir / gemeente,
+        if args.gemeente:
+            totaal_items, totaal_docs = await scrape_gemeente(
+                args.gemeente,
+                output_dir / args.gemeente,
                 maanden,
                 download_pdfs,
                 html_naar_pdf,
             )
-            totaal_items += items
-            totaal_docs += docs
+            logger.info("Klaar — items: %d, documenten: %d", totaal_items, totaal_docs)
 
-            if i < len(gemeenten):
-                time.sleep(1)
+        elif args.alle:
+            gemeenten = haal_gemeenten_lijst()
+            if not gemeenten:
+                logger.error("Geen gemeenten gevonden in simba-source.csv")
+                if SESSION is not None:
+                    await SESSION.close()
+                sys.exit(1)
 
-        logger.info(
-            "Alle gemeenten klaar — %d gemeenten, %d items, %d documenten — output: %s",
-            len(gemeenten), totaal_items, totaal_docs, output_dir.resolve(),
-        )
+            logger.info("Scraping %d gemeenten...", len(gemeenten))
+            totaal_items = 0
+            totaal_docs = 0
+
+            for i, gemeente in enumerate(gemeenten, 1):
+                logger.info("[%d/%d] %s", i, len(gemeenten), gemeente)
+                items, docs = await scrape_gemeente(
+                    gemeente,
+                    output_dir / gemeente,
+                    maanden,
+                    download_pdfs,
+                    html_naar_pdf,
+                )
+                totaal_items += items
+                totaal_docs += docs
+
+                if i < len(gemeenten):
+                    await asyncio.sleep(1)
+
+            logger.info(
+                "Alle gemeenten klaar — %d gemeenten, %d items, %d documenten — output: %s",
+                len(gemeenten), totaal_items, totaal_docs, output_dir.resolve(),
+            )
+
+        if SESSION is not None:
+            await SESSION.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

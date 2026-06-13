@@ -14,23 +14,23 @@ Gebruik:
 """
 
 import argparse
+import asyncio
 import re
 import sys
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-from tqdm import tqdm
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
+    async_download_document,
+    async_rate_limit,
+    create_async_session,
     sanitize_filename,
-    download_document as base_download_document,
     DownloadResult,
     logger,
 )
@@ -38,30 +38,48 @@ from base_scraper import (
 BASE_URL = "https://raadpleeg-halle.onlinesmartcities.be"
 KALENDER_URL = f"{BASE_URL}/zittingen/kalender"
 
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
 
-def init_session():
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session() -> None:
     """Initialiseer de sessie met base_scraper configuratie."""
     global SESSION, _config
+    if SESSION is not None:
+        await SESSION.close()
     _config = ScraperConfig(base_url=BASE_URL, output_dir=Path("."))
+    SESSION = create_async_session(_config)
+
+
+async def _get(url: str, timeout: int = 30) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    full_url = urljoin(BASE_URL, url) if not url.startswith("http") else url
     try:
-        SESSION = create_session(_config)
-    except Exception as e:
-        logger.warning("Sessie-initialisatie mislukt: %s", e)
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            full_url, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", full_url, exc)
+        return None
 
-# Initialiseer direct bij import voor compatibiliteit
-init_session()
 
-
-def download_document(doc_url: str, bestemming: Path, filename_hint: str = "") -> bool:
-    """Download een /document/{id} URL als PDF via base_scraper."""
+async def download_document(doc_url: str, bestemming: Path, filename_hint: str = "") -> bool:
+    """Download een /document/{id} URL als PDF via async_download_document."""
     if SESSION is None or _config is None:
         logger.error("Sessie niet geïnitialiseerd")
         return False
 
-    result = base_download_document(
+    result = await async_download_document(
         session=SESSION,
         config=_config,
         doc_url=doc_url,
@@ -76,15 +94,15 @@ def download_document(doc_url: str, bestemming: Path, filename_hint: str = "") -
     return result.success
 
 
-def haal_document_links_van_pagina(url: str) -> list[dict]:
-    """Haal alle /document/ links op van een pagina (via requests+BS4)."""
+async def haal_document_links_van_pagina(url: str) -> list[dict]:
+    """Haal alle /document/ links op van een pagina (via aiohttp+BS4)."""
     documenten = []
-    try:
-        full_url = urljoin(BASE_URL, url) if not url.startswith("http") else url
-        resp = SESSION.get(full_url, timeout=30)
-        if resp.status_code != 200:
-            return []
+    full_url = urljoin(BASE_URL, url) if not url.startswith("http") else url
+    resp = await _get(full_url, timeout=30)
+    if not resp or resp.status_code != 200:
+        return []
 
+    try:
         soup = BeautifulSoup(resp.text, "lxml")
         for link in soup.find_all("a", href=True):
             href = link["href"]
@@ -97,22 +115,22 @@ def haal_document_links_van_pagina(url: str) -> list[dict]:
     return documenten
 
 
-def haal_extra_subpaginas(vergadering_url: str) -> list[str]:
+async def haal_extra_subpaginas(vergadering_url: str) -> list[str]:
     """
-    Zoek bijkomendeagenda- en andere subpagina-links op de vergaderingspagina.
+    Zoek bijkomende agenda- en andere subpagina-links op de vergaderingspagina.
     Leuven heeft bijv. /zittingen/{id}/bijkomendeagenda/{id} links.
     Geeft volledige URLs terug.
     """
     extra = []
+    resp = await _get(vergadering_url, timeout=30)
+    if not resp or resp.status_code != 200:
+        return []
+
     try:
-        resp = SESSION.get(vergadering_url, timeout=30)
-        if resp.status_code != 200:
-            return []
         soup = BeautifulSoup(resp.text, "lxml")
-        verg_pad = vergadering_url.rstrip("/").split(BASE_URL)[-1]  # pad-gedeelte
+        verg_pad = vergadering_url.rstrip("/").split(BASE_URL)[-1]
         for link in soup.find_all("a", href=True):
             href = link["href"]
-            # Subpagina's van deze vergadering die geen agendapunten zijn
             if (verg_pad in href or href.startswith(verg_pad)) and \
                "/agendapunten/" not in href and \
                "/agenda" not in href and \
@@ -126,14 +144,14 @@ def haal_extra_subpaginas(vergadering_url: str) -> list[str]:
     return extra
 
 
-def haal_agenda_punten(vergadering_url: str) -> list[str]:
+async def haal_agenda_punten(vergadering_url: str) -> list[str]:
     """Haal alle agendapunt-URLs op van een vergaderingspagina."""
     agendapunten = []
-    try:
-        resp = SESSION.get(vergadering_url, timeout=30)
-        if resp.status_code != 200:
-            return []
+    resp = await _get(vergadering_url, timeout=30)
+    if not resp or resp.status_code != 200:
+        return []
 
+    try:
         soup = BeautifulSoup(resp.text, "lxml")
         for link in soup.find_all("a", href=True):
             href = link["href"]
@@ -147,23 +165,22 @@ def haal_agenda_punten(vergadering_url: str) -> list[str]:
     return agendapunten
 
 
-def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
+async def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
     """
     Controleer of een vergadering gepubliceerde inhoud heeft.
     Geeft (heeft_inhoud, titel) terug.
     """
-    try:
-        resp = SESSION.get(vergadering_url, timeout=15)
-        if resp.status_code != 200:
-            return False, ""
+    resp = await _get(vergadering_url, timeout=15)
+    if not resp or resp.status_code != 200:
+        return False, ""
 
+    try:
         soup = BeautifulSoup(resp.text, "lxml")
         tekst = soup.get_text()
 
         if "De inhoud van deze zitting is (nog) niet bekendgemaakt" in tekst:
             return False, ""
 
-        # Haal titel op
         h1 = soup.find("h1")
         if h1:
             for a in h1.find_all("a"):
@@ -173,13 +190,11 @@ def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
             titel = vergadering_url.split("/")[-1]
 
         return True, titel
-
     except Exception:
         return False, ""
 
 
 # Synoniemen die gemeenten gebruiken voor officiële vergaderingsverslagen/notulen.
-# Meerdere termen omdat er geen standaard bestaat over de portalen heen.
 NOTULEN_SYNONIEMEN: list[str] = [
     "notulen",
     "verslag",
@@ -206,19 +221,17 @@ def document_filter_match(doc_naam: str, document_filter: list[str] | str | None
     return any(term.lower() in naam_lower for term in document_filter)
 
 
-def zoek_html_publicaties(vergadering_url: str, ook_agendapunten: bool = False) -> list[dict]:
+async def zoek_html_publicaties(vergadering_url: str, ook_agendapunten: bool = False) -> list[dict]:
     """
     Zoek LBLOD HTML-publicatiepagina's op een vergaderingspagina.
-    Herkent links met property="lblodBesluit:linkToPublication" (besluitenlijst, notulen, ...).
-    Standaard alleen volledige vergaderingsdocumenten; met ook_agendapunten=True ook
-    individuele agendapunt- en bijkomendeagenda-items.
-    Geeft lijst van {url, naam, type} terug voor HTML→PDF-conversie.
+    Herkent links met property="lblodBesluit:linkToPublication".
     """
     pubs = []
+    resp = await _get(vergadering_url, timeout=15)
+    if not resp or resp.status_code != 200:
+        return []
+
     try:
-        resp = SESSION.get(vergadering_url, timeout=15)
-        if resp.status_code != 200:
-            return []
         soup = BeautifulSoup(resp.text, "lxml")
         for link in soup.find_all("a", property="lblodBesluit:linkToPublication"):
             href = link.get("href", "")
@@ -235,31 +248,28 @@ def zoek_html_publicaties(vergadering_url: str, ook_agendapunten: bool = False) 
             elif "/bijkomendeagenda/" in href:
                 pub_type = f"bijkomendeagenda_{item_id}"
             else:
-                pub_type = item_id  # besluitenlijst, notulen, agenda, ...
+                pub_type = item_id
             pubs.append({"url": full_url, "naam": naam, "type": pub_type})
     except Exception as e:
         logger.debug("HTML publicaties zoeken fout %s: %s", vergadering_url, e)
     return pubs
 
 
-# Bekende HTML-publicatie-subpaden voor portalen zonder lblodBesluit:linkToPublication
-# (bv. Maaseik: notulen en besluitenlijst zijn pure HTML-pagina's)
 _HTML_SUBPADEN = ["notulen", "besluitenlijst"]
 
 
-def zoek_directe_html_subpaginas(vergadering_url: str) -> list[dict]:
+async def zoek_directe_html_subpaginas(vergadering_url: str) -> list[dict]:
     """
     Fallback voor portalen (zoals Maaseik) die notulen/besluitenlijst als pure
     HTML-pagina's publiceren zonder lblodBesluit:linkToPublication-property.
-    Controleert bekende subpaden en retourneert die met echte inhoud.
     """
     pubs = []
     for suffix in _HTML_SUBPADEN:
         url = f"{vergadering_url.rstrip('/')}/{suffix}"
+        resp = await _get(url, timeout=15)
+        if not resp or resp.status_code != 200:
+            continue
         try:
-            resp = SESSION.get(url, timeout=15)
-            if resp.status_code != 200:
-                continue
             soup = BeautifulSoup(resp.text, "lxml")
             tekst = soup.get_text()
             if "De inhoud van deze zitting is (nog) niet bekendgemaakt" in tekst:
@@ -273,11 +283,8 @@ def zoek_directe_html_subpaginas(vergadering_url: str) -> list[dict]:
     return pubs
 
 
-def sla_html_op(pub: dict, output_pad: Path) -> bool:
-    """
-    Sla een LBLOD HTML-publicatiepagina op als .html-bestand.
-    Fallback voor portalen die geen /document/ PDF-links aanbieden.
-    """
+async def sla_html_op(pub: dict, output_pad: Path) -> bool:
+    """Sla een LBLOD HTML-publicatiepagina op als .html-bestand."""
     url = pub["url"]
     try:
         if "/zittingen/" in url:
@@ -290,8 +297,9 @@ def sla_html_op(pub: dict, output_pad: Path) -> bool:
         if output_file.exists():
             return True
         output_pad.mkdir(parents=True, exist_ok=True)
-        resp = SESSION.get(url, timeout=30)
-        resp.raise_for_status()
+        resp = await _get(url, timeout=30)
+        if not resp or resp.status_code != 200:
+            return False
         output_file.write_text(resp.text, encoding="utf-8")
         print(f"      [HTML] {filename}")
         return True
@@ -300,71 +308,65 @@ def sla_html_op(pub: dict, output_pad: Path) -> bool:
         return False
 
 
-def verwerk_vergadering(vergadering_url: str, output_pad: Path,
-                        ook_agendapunten: bool = False,
-                        orgaan_filter: str | None = None,
-                        document_filter: list[str] | str | None = None,
-                        ) -> tuple[int, list[dict]]:
+async def verwerk_vergadering(vergadering_url: str, output_pad: Path,
+                              ook_agendapunten: bool = False,
+                              orgaan_filter: str | None = None,
+                              document_filter: list[str] | str | None = None,
+                              ) -> tuple[int, list[dict]]:
     """
     Verwerk een vergadering: download alle bijhorende PDFs.
     Geeft (aantal_downloads, html_publicaties) terug.
-    html_publicaties is niet-leeg wanneer het portaal LBLOD HTML gebruikt i.p.v. PDF-bijlagen;
-    deze worden in scrape() via Playwright naar PDF omgezet.
     """
-    heeft_inhoud, titel = vergadering_heeft_inhoud(vergadering_url)
+    heeft_inhoud, titel = await vergadering_heeft_inhoud(vergadering_url)
     if not heeft_inhoud:
         return 0, []
 
     verg_id = vergadering_url.rstrip("/").split("/")[-1]
-
     print(f"\n    [{titel}] {verg_id}")
 
     downloads = 0
     verwerkt_ids: set[str] = set()
 
-    def verwerk_doc(doc: dict, bestemming: Path) -> bool:
+    async def verwerk_doc(doc: dict, bestemming: Path) -> bool:
         doc_id = doc["url"].split("/")[-1]
         if doc_id in verwerkt_ids:
             return False
-        # Documentnaam-filter (ondersteunt enkelvoudige string en lijst van termen)
         if not document_filter_match(doc["naam"], document_filter):
             return False
         verwerkt_ids.add(doc_id)
         naam_hint = sanitize_filename(doc["naam"])
-        succes = download_document(doc["url"], bestemming, naam_hint)
+        succes = await download_document(doc["url"], bestemming, naam_hint)
         if succes:
             print(f"      [OK] {naam_hint[:70]}")
         return succes
 
     # 1. Documenten van de vergaderingspagina zelf
-    doc_links = haal_document_links_van_pagina(vergadering_url)
+    doc_links = await haal_document_links_van_pagina(vergadering_url)
 
     # 2. Standaard subpagina's: agenda en besluitenlijst
     for subpad in [f"{vergadering_url}/agenda", f"{vergadering_url}/besluitenlijst"]:
-        doc_links += haal_document_links_van_pagina(subpad)
+        doc_links += await haal_document_links_van_pagina(subpad)
 
     # 3. Bijkomendeagenda en andere dynamische subpagina's (bv. Leuven)
-    for subpagina_url in haal_extra_subpaginas(vergadering_url):
-        doc_links += haal_document_links_van_pagina(subpagina_url)
+    for subpagina_url in await haal_extra_subpaginas(vergadering_url):
+        doc_links += await haal_document_links_van_pagina(subpagina_url)
 
     for doc in doc_links:
-        if verwerk_doc(doc, output_pad):
+        if await verwerk_doc(doc, output_pad):
             downloads += 1
 
     # 4. Optioneel: agendapunten
     if ook_agendapunten:
-        agendapunt_urls = haal_agenda_punten(vergadering_url)
-        if agendapunt_urls:
-            for ap_url in tqdm(agendapunt_urls, desc="      Agendapunten", leave=False):
-                for doc in haal_document_links_van_pagina(ap_url):
-                    if verwerk_doc(doc, output_pad):
-                        downloads += 1
+        agendapunt_urls = await haal_agenda_punten(vergadering_url)
+        for ap_url in agendapunt_urls:
+            for doc in await haal_document_links_van_pagina(ap_url):
+                if await verwerk_doc(doc, output_pad):
+                    downloads += 1
 
     if downloads == 0:
-        html_pubs = zoek_html_publicaties(vergadering_url, ook_agendapunten)
+        html_pubs = await zoek_html_publicaties(vergadering_url, ook_agendapunten)
         if not html_pubs:
-            # Tweede fallback: portalen (zoals Maaseik) zonder lblodBesluit-property
-            html_pubs = zoek_directe_html_subpaginas(vergadering_url)
+            html_pubs = await zoek_directe_html_subpaginas(vergadering_url)
         if html_pubs:
             namen = ", ".join(p["naam"] for p in html_pubs)
             print(f"      (HTML-publicatie: {namen} — wordt opgeslagen als HTML)")
@@ -375,44 +377,32 @@ def verwerk_vergadering(vergadering_url: str, output_pad: Path,
     return downloads, []
 
 
-def haal_organen_via_playwright() -> list[dict]:
+async def haal_organen_via_playwright() -> list[dict]:
     """
     Haal de organen op via een headless browser (Playwright).
     Fallback wanneer de statische HTML geen <select id='organs'> bevat.
-
-    Twee strategieën (in volgorde):
-    1. Onderschep de fetchcalendar JSON-API en extraheer unieke organ-namen.
-    2. Lees <select#organs> uit de gerenderde DOM (oudere portaalversie).
-
-    Wanneer deze functie vanuit een asyncio event loop wordt aangeroepen (bv.
-    via questionary/prompt_toolkit in start.py), wordt de sync-Playwright code
-    in een aparte thread uitgevoerd zodat het "sync API inside asyncio loop"
-    probleem wordt omzeild.
     """
-    import asyncio
-    import concurrent.futures
+    calendar_meetings: list[dict] = []
 
-    def _run() -> list[dict]:
-        calendar_meetings: list[dict] = []
-
-        def _on_response(response):
-            if "fetchcalendar" in response.url:
-                try:
-                    data = response.json()
-                    calendar_meetings.extend(data.get("meetings", []))
-                except Exception:
-                    pass
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+    def _on_response(response):
+        if "fetchcalendar" in response.url:
             try:
-                ctx = browser.new_context(
+                data = response.json()
+                calendar_meetings.extend(data.get("meetings", []))
+            except Exception:
+                pass
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                ctx = await browser.new_context(
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
                 )
-                page = ctx.new_page()
+                page = await ctx.new_page()
                 page.on("response", _on_response)
-                page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
-                time.sleep(1)
+                await page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
+                await asyncio.sleep(1)
 
                 # Strategie 1: organen extraheren uit fetchcalendar API
                 if calendar_meetings:
@@ -428,164 +418,55 @@ def haal_organen_via_playwright() -> list[dict]:
 
                 # Strategie 2: <select#organs> in de gerenderde DOM
                 options = page.locator("select#organs option")
-                count = options.count()
+                count = await options.count()
                 organen = []
                 for i in range(count):
                     opt = options.nth(i)
-                    naam = opt.inner_text().strip()
-                    uuid = opt.get_attribute("value") or ""
+                    naam = await opt.inner_text()
+                    naam = naam.strip()
+                    uuid = await opt.get_attribute("value") or ""
                     if uuid:
                         organen.append({"naam": naam, "uuid": uuid})
                 return organen
             finally:
-                browser.close()
-
-    try:
-        try:
-            asyncio.get_running_loop()
-            # Er loopt al een asyncio loop → voer Playwright uit in een aparte thread
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(_run).result()
-        except RuntimeError:
-            # Geen actieve loop → direct aanroepen
-            return _run()
+                await browser.close()
     except Exception as e:
         print(f"  [!] Playwright organen ophalen mislukt: {e}")
         return []
 
 
-def haal_organen_statisch() -> list[dict]:
+async def haal_organen_statisch() -> list[dict]:
     """
     Haal de organen op uit de statische HTML van de kalender.
-    Gebruikt <select id='organs' multiple> met <option value='UUID'>.
     Valt terug op Playwright als het select-element niet in de statische HTML zit.
-    Geeft lijst van {naam, uuid} terug.
     """
-    try:
-        resp = SESSION.get(KALENDER_URL, timeout=15)
-        soup = BeautifulSoup(resp.text, "lxml")
-        select = soup.find("select", id="organs")
-        if select:
-            return [
-                {"naam": opt.get_text(strip=True), "uuid": opt.get("value", "")}
-                for opt in select.find_all("option")
-                if opt.get("value")
-            ]
-    except Exception as e:
-        print(f"  [!] Fout laden organen (statisch): {e}")
-    # Statische HTML bevat het select-element niet → pagina laadt organen via JS
-    return haal_organen_via_playwright()
+    resp = await _get(KALENDER_URL, timeout=15)
+    if resp and resp.status_code == 200:
+        try:
+            soup = BeautifulSoup(resp.text, "lxml")
+            select = soup.find("select", id="organs")
+            if select:
+                return [
+                    {"naam": opt.get_text(strip=True), "uuid": opt.get("value", "")}
+                    for opt in select.find_all("option")
+                    if opt.get("value")
+                ]
+        except Exception as e:
+            print(f"  [!] Fout laden organen (statisch): {e}")
+    return await haal_organen_via_playwright()
 
 
-def zoek_orgaan_uuid(orgaan_naam: str) -> tuple[str | None, str | None]:
-    """
-    Zoek UUID van een orgaan op naam (hoofdletterongevoelig, deel-match).
-    Geeft (uuid, exacte_naam) terug of (None, None).
-    """
-    for org in haal_organen_statisch():
+async def zoek_orgaan_uuid(orgaan_naam: str) -> tuple[str | None, str | None]:
+    """Zoek UUID van een orgaan op naam (hoofdletterongevoelig, deel-match)."""
+    for org in await haal_organen_statisch():
         if orgaan_naam.lower() in org["naam"].lower() or org["naam"].lower() in orgaan_naam.lower():
             return org["uuid"], org["naam"]
     return None, None
 
 
-def haal_vergadering_links_van_pagina(page) -> list[str]:
-    """Haal alle vergaderingslinks op van de huidige kalenderweergave."""
-    links = []
-    try:
-        zitting_links = page.locator("a[href*='/zittingen/']")
-        count = zitting_links.count()
-        for i in range(count):
-            link = zitting_links.nth(i)
-            href = link.get_attribute("href") or ""
-            if "/zittingen/" in href and "kalender" not in href and "lijst" not in href:
-                full_url = urljoin(BASE_URL, href)
-                if full_url not in links:
-                    links.append(full_url)
-    except Exception as e:
-        print(f"  [!] Fout bij ophalen vergaderlinks: {e}")
-    return links
-
-
-def activeer_orgaan_filter(page, orgaan_naam: str) -> bool:
-    """Activeer het orgaanfilter via de <select id='organs'> en Select2."""
-    uuid, exacte_naam = zoek_orgaan_uuid(orgaan_naam)
-    if not uuid:
-        print(f"  [!] Orgaan '{orgaan_naam}' niet gevonden.")
-        print("      Gebruik --lijst-organen voor beschikbare namen.")
-        return False
-    try:
-        # Gebruik Playwright select_option op het onderliggende <select>
-        page.select_option("select#organs", value=[uuid])
-        # Trigger change-event zodat Select2/kalender reageert
-        page.evaluate("document.getElementById('organs').dispatchEvent(new Event('change'))")
-        page.wait_for_load_state("networkidle", timeout=10000)
-        time.sleep(0.5)
-        print(f"  Filter actief: {exacte_naam} (UUID: {uuid})")
-        return True
-    except Exception as e:
-        print(f"  [!] Filter klikken mislukt: {e}")
-        print(f"  => Post-filter op titelnaam wordt gebruikt")
-        return False
-
-
-def navigeer_vorige_maand(page) -> str | None:
-    """Ga naar de vorige maand. Ondersteunt twee kalender-stijlen:
-    - Klassiek (Bootstrap paginatie): li.page-item.previous a
-    - Nieuwer (tekst-link): <a href="#">vorige maand</a>  (bv. Niel)
-    """
-    # Strategie 1: Bootstrap-paginatie (de meeste portalen)
-    try:
-        li = page.locator("li.page-item.previous").first
-        klasse = li.get_attribute("class", timeout=3000) or ""
-        if "disabled" in klasse:
-            return None  # Begin van beschikbaar bereik
-        vorige = li.locator("a").first
-        titel_attr = vorige.get_attribute("title", timeout=3000) or ""
-        vorige.click()
-        page.wait_for_load_state("networkidle", timeout=15000)
-        time.sleep(0.5)
-        return titel_attr or huidige_maand_titel(page)
-    except Exception:
-        pass
-
-    # Strategie 2: tekst-gebaseerde "vorige maand"-link (nieuwere portalen)
-    try:
-        vorige = page.get_by_text(re.compile(r"vorige\s+maand", re.IGNORECASE)).first
-        vorige.click(timeout=5000)
-        page.wait_for_load_state("networkidle", timeout=15000)
-        time.sleep(0.5)
-        return huidige_maand_titel(page) or "?"
-    except Exception as e:
-        print(f"  [!] Maandnavigatie mislukt: {e}")
-    return None
-
-
-def huidige_maand_titel(page) -> str:
-    """Haal de huidige maandtitel op. Probeert meerdere kalender-stijlen."""
-    # Klassiek: Bootstrap paginatie
-    try:
-        el = page.locator("li.page-item.current a").first
-        tekst = el.inner_text(timeout=2000).strip()
-        if tekst:
-            return tekst
-    except Exception:
-        pass
-
-    # Nieuwer: geselecteerde optie in maand/jaar-dropdowns (bv. Niel)
-    try:
-        maand = page.locator("select option:checked").nth(0).inner_text(timeout=2000).strip()
-        jaar = page.locator("select option:checked").nth(1).inner_text(timeout=2000).strip()
-        if maand and jaar:
-            return f"{maand} {jaar}"
-    except Exception:
-        pass
-
-    return ""
-
-
-def toon_organen():
-    """Toon alle beschikbare organen (rechtstreeks uit statische HTML)."""
-    organen = haal_organen_statisch()
+async def toon_organen() -> None:
+    """Toon alle beschikbare organen."""
+    organen = await haal_organen_statisch()
     if not organen:
         print("Geen organen gevonden.")
         return
@@ -595,10 +476,98 @@ def toon_organen():
         print(f"  - {org['naam']}")
 
 
-def scrape(orgaan: str | None, output_map: str, maanden: int,
-           ook_agendapunten: bool = False, headless: bool = True,
-           document_filter: list[str] | str | None = None,
-           max_workers: int = 4):
+async def haal_vergadering_links_van_pagina(page) -> list[str]:
+    """Haal alle vergaderingslinks op van de huidige kalenderweergave."""
+    links = []
+    try:
+        zitting_links = page.locator("a[href*='/zittingen/']")
+        count = await zitting_links.count()
+        for i in range(count):
+            link = zitting_links.nth(i)
+            href = await link.get_attribute("href") or ""
+            if "/zittingen/" in href and "kalender" not in href and "lijst" not in href:
+                full_url = urljoin(BASE_URL, href)
+                if full_url not in links:
+                    links.append(full_url)
+    except Exception as e:
+        print(f"  [!] Fout bij ophalen vergaderlinks: {e}")
+    return links
+
+
+async def activeer_orgaan_filter(page, orgaan_naam: str) -> bool:
+    """Activeer het orgaanfilter via de <select id='organs'> en Select2."""
+    uuid, exacte_naam = await zoek_orgaan_uuid(orgaan_naam)
+    if not uuid:
+        print(f"  [!] Orgaan '{orgaan_naam}' niet gevonden.")
+        print("      Gebruik --lijst-organen voor beschikbare namen.")
+        return False
+    try:
+        await page.select_option("select#organs", value=[uuid])
+        await page.evaluate("document.getElementById('organs').dispatchEvent(new Event('change'))")
+        await page.wait_for_load_state("networkidle", timeout=10000)
+        await asyncio.sleep(0.5)
+        print(f"  Filter actief: {exacte_naam} (UUID: {uuid})")
+        return True
+    except Exception as e:
+        print(f"  [!] Filter klikken mislukt: {e}")
+        print(f"  => Post-filter op titelnaam wordt gebruikt")
+        return False
+
+
+async def navigeer_vorige_maand(page) -> str | None:
+    """Ga naar de vorige maand. Ondersteunt twee kalender-stijlen."""
+    # Strategie 1: Bootstrap-paginatie
+    try:
+        li = page.locator("li.page-item.previous").first
+        klasse = await li.get_attribute("class", timeout=3000) or ""
+        if "disabled" in klasse:
+            return None
+        vorige = li.locator("a").first
+        titel_attr = await vorige.get_attribute("title", timeout=3000) or ""
+        await vorige.click()
+        await page.wait_for_load_state("networkidle", timeout=15000)
+        await asyncio.sleep(0.5)
+        return titel_attr or await huidige_maand_titel(page)
+    except Exception:
+        pass
+
+    # Strategie 2: tekst-gebaseerde "vorige maand"-link
+    try:
+        vorige = page.get_by_text(re.compile(r"vorige\s+maand", re.IGNORECASE)).first
+        await vorige.click(timeout=5000)
+        await page.wait_for_load_state("networkidle", timeout=15000)
+        await asyncio.sleep(0.5)
+        return await huidige_maand_titel(page) or "?"
+    except Exception as e:
+        print(f"  [!] Maandnavigatie mislukt: {e}")
+    return None
+
+
+async def huidige_maand_titel(page) -> str:
+    """Haal de huidige maandtitel op. Probeert meerdere kalender-stijlen."""
+    try:
+        el = page.locator("li.page-item.current a").first
+        tekst = await el.inner_text(timeout=2000)
+        if tekst.strip():
+            return tekst.strip()
+    except Exception:
+        pass
+
+    try:
+        maand = await page.locator("select option:checked").nth(0).inner_text(timeout=2000)
+        jaar = await page.locator("select option:checked").nth(1).inner_text(timeout=2000)
+        if maand.strip() and jaar.strip():
+            return f"{maand.strip()} {jaar.strip()}"
+    except Exception:
+        pass
+
+    return ""
+
+
+async def scrape(orgaan: str | None, output_map: str, maanden: int,
+                 ook_agendapunten: bool = False, headless: bool = True,
+                 document_filter: list[str] | str | None = None,
+                 max_workers: int = 4) -> None:
     """Hoofdfunctie voor het scrapen."""
     output_pad = Path(output_map)
     output_pad.mkdir(parents=True, exist_ok=True)
@@ -621,29 +590,29 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
     vergaderingen_met_docs = 0
     html_publicaties_todo: list[dict] = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
         try:
-            context = browser.new_context(
+            context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
             )
-            page = context.new_page()
+            page = await context.new_page()
 
             print("[1] Kalender laden...")
             print("    (verbinding maken...)")
             try:
-                page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
+                await page.goto(KALENDER_URL, wait_until="networkidle", timeout=30000)
             except PlaywrightTimeout:
                 print("    [!] Timeout bij networkidle, probeer verder met load...")
-                page.goto(KALENDER_URL, wait_until="load", timeout=30000)
+                await page.goto(KALENDER_URL, wait_until="load", timeout=30000)
             print("    (wacht op elementen...)")
-            time.sleep(1)
+            await asyncio.sleep(1)
             print("    OK")
 
             if orgaan:
                 print(f"[2] Filter instellen: {orgaan}")
                 print("    (zoeken in beschikbare organen...)")
-                if activeer_orgaan_filter(page, orgaan):
+                if await activeer_orgaan_filter(page, orgaan):
                     print("    OK - Filter actief")
                 else:
                     print("    [!] Filter kon niet ingesteld worden")
@@ -653,46 +622,51 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
             print(f"[3] Doorzoek {maanden} maand(en)...\n")
 
             for maand_nr in range(maanden):
-                maand_titel = huidige_maand_titel(page)
+                maand_titel = await huidige_maand_titel(page)
                 print(f"  [{maand_titel or f'Maand {maand_nr+1}'}]")
                 print(f"    (laden van vergaderingen...)")
 
-                vergaderingen = haal_vergadering_links_van_pagina(page)
+                vergaderingen = await haal_vergadering_links_van_pagina(page)
                 nieuwe = [v for v in vergaderingen if v not in alle_vergadering_urls]
                 alle_vergadering_urls.update(vergaderingen)
 
                 print(f"    {len(vergaderingen)} vergaderingen gevonden, {len(nieuwe)} nieuw te verwerken")
 
                 if nieuwe:
-                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                        futures = {
-                            pool.submit(
-                                verwerk_vergadering, verg_url, output_pad,
+                    # Verwerk vergaderingen concurrent maar respecteer rate limits
+                    semaphore = asyncio.Semaphore(max_workers)
+
+                    async def verwerk_met_sem(verg_url: str) -> tuple[str, int, list[dict]]:
+                        async with semaphore:
+                            n, html_pubs = await verwerk_vergadering(
+                                verg_url, output_pad,
                                 ook_agendapunten, None, document_filter,
-                            ): verg_url
-                            for verg_url in nieuwe
-                        }
-                        for idx, fut in enumerate(as_completed(futures), 1):
-                            verg_url = futures[fut]
-                            try:
-                                n, html_pubs = fut.result()
-                            except Exception as exc:
-                                print(f"    ({idx}/{len(nieuwe)}) FOUT {verg_url}: {exc}")
-                                n, html_pubs = 0, []
-                            print(f"    ({idx}/{len(nieuwe)}) {verg_url.split('/')[-1]} -> {n} PDF(s)")
-                            totaal_downloads += n
-                            if n > 0:
-                                vergaderingen_met_docs += 1
-                            # Collect HTML publications; apply document filter
-                            if html_pubs:
-                                if document_filter:
-                                    html_pubs = [p for p in html_pubs
-                                                 if document_filter_match(p["naam"], document_filter)]
-                                html_publicaties_todo.extend(html_pubs)
+                            )
+                            return verg_url, n, html_pubs
+
+                    resultaten = await asyncio.gather(
+                        *[verwerk_met_sem(v) for v in nieuwe],
+                        return_exceptions=True,
+                    )
+
+                    for idx, res in enumerate(resultaten, 1):
+                        if isinstance(res, Exception):
+                            print(f"    ({idx}/{len(nieuwe)}) FOUT: {res}")
+                            continue
+                        verg_url, n, html_pubs = res
+                        print(f"    ({idx}/{len(nieuwe)}) {verg_url.split('/')[-1]} -> {n} PDF(s)")
+                        totaal_downloads += n
+                        if n > 0:
+                            vergaderingen_met_docs += 1
+                        if html_pubs:
+                            if document_filter:
+                                html_pubs = [p for p in html_pubs
+                                             if document_filter_match(p["naam"], document_filter)]
+                            html_publicaties_todo.extend(html_pubs)
 
                 if maand_nr < maanden - 1:
                     print(f"    (navigeren naar vorige maand...)")
-                    nieuwe_maand = navigeer_vorige_maand(page)
+                    nieuwe_maand = await navigeer_vorige_maand(page)
                     if nieuwe_maand is None:
                         print(f"\n  [!] Kan niet verder terug, gestopt na {maand_nr+1} maand(en).")
                         break
@@ -701,12 +675,12 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
             if html_publicaties_todo:
                 print(f"[4] HTML opslaan: {len(html_publicaties_todo)} publicatie(s)...\n")
                 for pub in html_publicaties_todo:
-                    if sla_html_op(pub, output_pad):
+                    if await sla_html_op(pub, output_pad):
                         totaal_downloads += 1
                         vergaderingen_met_docs += 1
 
         finally:
-            browser.close()
+            await browser.close()
 
     lege_mappen = [p for p in output_pad.rglob("*") if p.is_dir() and not any(p.iterdir())]
     for lege in lege_mappen:
@@ -747,11 +721,9 @@ Voorbeelden:
     parser.add_argument("--agendapunten", "-a", action="store_true",
         help="Ook individuele agendapunt-besluiten meenemen (trager)")
     parser.add_argument("--document-filter", "-f", type=str, default=None,
-        help="Filter documenten op naam. Meerdere termen scheiden met komma (bv. 'notulen,verslag'). "
-             "Alleen docs die één van de termen bevatten worden gedownload.")
+        help="Filter documenten op naam. Meerdere termen scheiden met komma.")
     parser.add_argument("--notulen", action="store_true",
-        help="Download alleen verslagdocumenten: notulen, verslag, zittingsverslag, besluitenlijst, "
-             "ontwerpbesluitenbundel, dagorde (ongeacht de exacte term die het portaal gebruikt)")
+        help="Download alleen verslagdocumenten: notulen, verslag, zittingsverslag, etc.")
     parser.add_argument("--lijst-organen", action="store_true",
         help="Toon beschikbare organen en stop")
     parser.add_argument("--zichtbaar", action="store_true",
@@ -765,35 +737,43 @@ Voorbeelden:
         global BASE_URL, KALENDER_URL
         BASE_URL = args.base_url.rstrip("/")
         KALENDER_URL = f"{BASE_URL}/zittingen/kalender"
-        init_session()
 
-    # Zet document_filter om naar lijst van termen (kommagescheiden invoer
-    # of de volledige synoniemenlijst bij --notulen)
     resolved_filter: list[str] | None = None
     if args.document_filter:
         resolved_filter = [t.strip() for t in args.document_filter.split(",") if t.strip()]
     elif args.notulen:
         resolved_filter = NOTULEN_SYNONIEMEN
 
-    if args.lijst_organen:
-        toon_organen()
-        return
+    async def _run() -> None:
+        await init_session()
 
-    if not args.orgaan and not args.alle:
-        print("Geef een orgaan op (--orgaan) of gebruik --alle voor alle organen.")
-        print("Gebruik --lijst-organen om beschikbare organen te bekijken.\n")
-        parser.print_help()
-        sys.exit(1)
+        if args.lijst_organen:
+            await toon_organen()
+            if SESSION is not None:
+                await SESSION.close()
+            return
 
-    scrape(
-        orgaan=None if args.alle else args.orgaan,
-        output_map=args.output,
-        maanden=args.maanden,
-        ook_agendapunten=args.agendapunten,
-        headless=not args.zichtbaar,
-        document_filter=resolved_filter,
-        max_workers=args.max_workers,
-    )
+        if not args.orgaan and not args.alle:
+            print("Geef een orgaan op (--orgaan) of gebruik --alle voor alle organen.")
+            print("Gebruik --lijst-organen om beschikbare organen te bekijken.\n")
+            parser.print_help()
+            if SESSION is not None:
+                await SESSION.close()
+            sys.exit(1)
+
+        await scrape(
+            orgaan=None if args.alle else args.orgaan,
+            output_map=args.output,
+            maanden=args.maanden,
+            ook_agendapunten=args.agendapunten,
+            headless=not args.zichtbaar,
+            document_filter=resolved_filter,
+            max_workers=args.max_workers,
+        )
+        if SESSION is not None:
+            await SESSION.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

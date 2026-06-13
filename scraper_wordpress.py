@@ -20,31 +20,40 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import json
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
+import aiohttp
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
     print_summary,
-    rate_limited_get,
     sanitize_filename,
     DownloadResult,
 )
 
-SESSION = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 BASE_URL = ""
+
+
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
 
 # ---------------------------------------------------------------------------
 # Gemeente-configuratie
@@ -379,8 +388,10 @@ GEMEENTEN: dict[str, dict] = {
 # Sessie-initialisatie
 # ---------------------------------------------------------------------------
 
-def init_session(base_url: str, ssl_verify: bool = True) -> None:
+async def init_session(base_url: str, ssl_verify: bool = True) -> None:
     global SESSION, _config, BASE_URL
+    if SESSION is not None:
+        await SESSION.close()
     parsed = urlparse(base_url)
     BASE_URL = f"{parsed.scheme}://{parsed.netloc}"
     _config = ScraperConfig(
@@ -388,24 +399,41 @@ def init_session(base_url: str, ssl_verify: bool = True) -> None:
         rate_limit_delay=0.5,
         timeout=30,
     )
-    SESSION = create_session(_config)
     if not ssl_verify:
-        SESSION.verify = False
-    # WordPress-sites verwachten een browser User-Agent
-    SESSION.headers.update({
+        connector = aiohttp.TCPConnector(ssl=False, limit=_config.max_parallel_downloads * 4)
+        SESSION = aiohttp.ClientSession(
+            connector=connector,
+            headers={"User-Agent": _config.user_agent},
+            timeout=aiohttp.ClientTimeout(total=_config.timeout),
+        )
+    else:
+        SESSION = create_async_session(_config)
+
+
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
+    headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         )
-    })
+    }
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            full_url, headers=headers, timeout=aiohttp.ClientTimeout(total=_config.timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", full_url, exc)
+        return None
 
 
-def _get(url: str):
-    return rate_limited_get(SESSION, url, _config)
-
-
-def _scrape_wppdfemb(config: dict, output_dir: Path, maanden: int) -> tuple[int, int]:
+async def _scrape_wppdfemb(config: dict, output_dir: Path, maanden: int) -> tuple[int, int]:
     """Scrape WordPress sites met wppdfemb plugin (iframe PDF-embedding via base64 JSON)."""
     grensdatum = date.today() - timedelta(days=maanden * 31)
     naam = config["naam"]
@@ -415,7 +443,7 @@ def _scrape_wppdfemb(config: dict, output_dir: Path, maanden: int) -> tuple[int,
     listing_url = _absolute(config["listing_pad"])
     post_re = re.compile(config["post_re"])
 
-    resp = _get(listing_url)
+    resp = await _get(listing_url)
     if not resp or resp.status_code != 200:
         logger.warning("Listing niet bereikbaar: %s", listing_url)
         return 0, 0
@@ -433,7 +461,7 @@ def _scrape_wppdfemb(config: dict, output_dir: Path, maanden: int) -> tuple[int,
 
     alle_pdfs: list[dict] = []
     for post_url in post_urls:
-        r = _get(post_url)
+        r = await _get(post_url)
         if not r or r.status_code != 200:
             logger.warning("Post niet bereikbaar: %s", post_url)
             continue
@@ -455,36 +483,29 @@ def _scrape_wppdfemb(config: dict, output_dir: Path, maanden: int) -> tuple[int,
         if datum is not None and datum < grensdatum:
             continue
         datum_str = datum.isoformat() if datum else "onbekend"
-        alle_pdfs.append({"url": pdf_url, "naam": bestandsnaam, "datum": datum_str})
+        alle_pdfs.append({"url": pdf_url, "naam": sanitize_filename(
+            f"{datum_str}_{bestandsnaam}" if datum_str else bestandsnaam
+        )})
 
     logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
 
-    alle_resultaten: list[DownloadResult] = []
-    for pdf in alle_pdfs:
-        hint = sanitize_filename(f"{pdf['datum']}_{pdf['naam']}" if pdf["datum"] else pdf["naam"])
-        result = download_document(
-            SESSION, _config,
-            pdf["url"],
-            gem_dir,
-            filename_hint=hint or pdf["naam"],
-            require_pdf=True,
-        )
-        alle_resultaten.append(result)
-
+    alle_resultaten = await async_download_documents_parallel(
+        SESSION, _config, alle_pdfs, gem_dir, require_pdf=True,
+    )
     gedownload = sum(1 for r in alle_resultaten if r.success and not r.skipped)
     print_summary(alle_resultaten, naam=naam)
     return len(alle_resultaten), gedownload
 
 
-def _get_via_playwright(url: str) -> str | None:
+async def _get_via_playwright(url: str) -> str | None:
     """Haal een pagina op via Playwright (omzeilt JS-challenges zoals Sucuri WAF)."""
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=20000)
-            html = page.content()
-            browser.close()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, wait_until="networkidle", timeout=20000)
+            html = await page.content()
+            await browser.close()
             return html
     except PlaywrightTimeout:
         logger.warning("Playwright timeout voor %s", url)
@@ -777,7 +798,7 @@ def _lgc_pdfs_uit_content(data: list, grensdatum, grensjaar_hint: str | None = N
     return pdfs
 
 
-def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tuple[int, int]:
+async def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tuple[int, int]:
     """Scrape een gemeente op het LetsGoCity-platform (bijv. Hastière, Courcelles).
 
     Gebruikt de mapi.letsgocity.be REST API — geen HTML scraping nodig.
@@ -788,8 +809,6 @@ def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tup
         pv_menu_uid     UID van het PV-menu → lijst jaarspagina's (Hastière-stijl)
         pv_slug         Directe content-slug met alle PVs op één pagina (Courcelles-stijl)
     """
-    import requests as _req  # lokale import om globale SESSION niet te verstoren
-
     grensdatum = date.today() - timedelta(days=maanden * 31)
     naam = config["naam"]
     portal = config["portal"]
@@ -806,14 +825,18 @@ def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tup
             f"{_LGC_MAPI}/core-content-service/api/v1/web/portal"
             f"/{portal}/menu/{config['pv_menu_uid']}"
         )
-        try:
-            resp = _req.get(menu_url, timeout=30)
-            resp.raise_for_status()
-        except Exception as exc:
-            logger.error("Kon LetsGoCity-menu niet ophalen: %s", exc)
+        resp = await _get(menu_url)
+        if not resp or resp.status_code != 200:
+            logger.error("Kon LetsGoCity-menu niet ophalen: HTTP %s", getattr(resp, "status_code", "?"))
             return 0, 0
 
-        for item in resp.json().get("data", []):
+        try:
+            menu_data = json.loads(resp.text)
+        except Exception as exc:
+            logger.error("LetsGoCity-menu JSON fout: %s", exc)
+            return 0, 0
+
+        for item in menu_data.get("data", []):
             action_path = item.get("action", {}).get("path", "")
             if "/information/" not in action_path:
                 continue
@@ -827,16 +850,20 @@ def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tup
                 f"{_LGC_MAPI}/core-content-service/api/v1/web/portal"
                 f"/{portal}/content/{slug}?env=desktop&maps=false"
             )
+            cr = await _get(content_url)
+            if not cr or cr.status_code != 200:
+                logger.warning("Kon inhoud niet ophalen (%s): HTTP %s", slug, getattr(cr, "status_code", "?"))
+                continue
+
             try:
-                cr = _req.get(content_url, timeout=30)
-                cr.raise_for_status()
+                cr_data = json.loads(cr.text)
             except Exception as exc:
-                logger.warning("Kon inhoud niet ophalen (%s): %s", slug, exc)
+                logger.warning("LetsGoCity inhoud JSON fout (%s): %s", slug, exc)
                 continue
 
             alle_pdfs.extend(
                 _lgc_pdfs_uit_content(
-                    cr.json().get("data", []),
+                    cr_data.get("data", []),
                     grensdatum,
                     jaar_m.group(1) if jaar_m else None,
                 )
@@ -848,13 +875,15 @@ def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tup
             f"{_LGC_MAPI}/core-content-service/api/v1/web/portal"
             f"/{portal}/content/{config['pv_slug']}?env=desktop&maps=false"
         )
-        try:
-            cr = _req.get(content_url, timeout=30)
-            cr.raise_for_status()
-        except Exception as exc:
-            logger.error("Kon LetsGoCity-inhoud niet ophalen: %s", exc)
+        cr = await _get(content_url)
+        if not cr or cr.status_code != 200:
+            logger.error("Kon LetsGoCity-inhoud niet ophalen: HTTP %s", getattr(cr, "status_code", "?"))
             return 0, 0
-        alle_pdfs.extend(_lgc_pdfs_uit_content(cr.json().get("data", []), grensdatum))
+        try:
+            alle_pdfs.extend(_lgc_pdfs_uit_content(json.loads(cr.text).get("data", []), grensdatum))
+        except Exception as exc:
+            logger.error("LetsGoCity inhoud JSON fout: %s", exc)
+            return 0, 0
 
     else:
         logger.error("LetsGoCity-config vereist 'pv_menu_uid' of 'pv_slug'")
@@ -862,26 +891,21 @@ def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tup
 
     logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
 
-    alle_resultaten: list[DownloadResult] = []
-    for pdf in alle_pdfs:
-        hint = sanitize_filename(
+    download_docs = [
+        {"url": pdf["url"], "naam": sanitize_filename(
             f"{pdf['datum']}_{pdf['naam']}" if pdf.get("datum") else pdf["naam"]
-        )
-        result = download_document(
-            SESSION, _config,
-            pdf["url"],
-            gem_dir,
-            filename_hint=hint,
-            require_pdf=True,
-        )
-        alle_resultaten.append(result)
-
+        )}
+        for pdf in alle_pdfs
+    ]
+    alle_resultaten = await async_download_documents_parallel(
+        SESSION, _config, download_docs, gem_dir, require_pdf=True,
+    )
     gedownload = sum(1 for r in alle_resultaten if r.success and not r.skipped)
     print_summary(alle_resultaten, naam=naam)
     return len(alle_resultaten), gedownload
 
 
-def scrape_gemeente(
+async def scrape_gemeente(
     config: dict,
     output_dir: Path,
     maanden: int = 12,
@@ -894,11 +918,11 @@ def scrape_gemeente(
     """
     # LetsGoCity-platform heeft een volledig eigen API-stroom
     if config.get("letsgocity"):
-        return _scrape_letsgocity(config, output_dir, maanden)
+        return await _scrape_letsgocity(config, output_dir, maanden)
 
     # wppdfemb: WordPress sites die PDFs embedden via iframe met base64-encoded JSON
     if config.get("wppdfemb"):
-        return _scrape_wppdfemb(config, output_dir, maanden)
+        return await _scrape_wppdfemb(config, output_dir, maanden)
 
     grensdatum = date.today() - timedelta(days=maanden * 31)
     naam = config["naam"]
@@ -922,14 +946,14 @@ def scrape_gemeente(
 
     for listing_url in listing_urls:
         if config.get("gebruik_playwright"):
-            html = _get_via_playwright(listing_url)
+            html = await _get_via_playwright(listing_url)
             if html:
                 paginas.append((html, listing_url))
             else:
                 logger.warning("Playwright kon pagina niet ophalen: %s", listing_url)
             continue
 
-        resp = _get(listing_url)
+        resp = await _get(listing_url)
         if not resp or resp.status_code != 200:
             logger.warning("Listing niet bereikbaar: %s (HTTP %s)",
                            listing_url, getattr(resp, "status_code", "?"))
@@ -949,12 +973,11 @@ def scrape_gemeente(
                     jaar = int(m.group(1))
                     if jaar >= grensdatum.year and jaar not in gezien_jaren:
                         gezien_jaren.add(jaar)
-                        r = _get(full)
+                        r = await _get(full)
                         if r and r.status_code == 200:
                             paginas.append((r.text, full))
         elif config.get("subfolder_crawl"):
             # Twee-niveau crawl: root → jaarsubmappen → PDFs
-            # bijv. Antoing (vaste slugs) en Ans (jaar in URL)
             sf_re = re.compile(config["subfolder_re"])
             soup = BeautifulSoup(html, "lxml")
             sf_links: list[str] = []
@@ -967,29 +990,23 @@ def scrape_gemeente(
                     gezien_sf.add(full)
                     sf_links.append(full)
             if config.get("subfolder_jaar_in_url"):
-                # Jaar staat in URL: filter op grensdatum.year
-                # Optionele 'subfolder_jaar_re' om jaar te extraheren (default: jaar aan einde van URL)
                 jaar_re_pat = re.compile(config.get("subfolder_jaar_re", r"(20\d{2})/?$"))
                 sf_links = [
                     sf for sf in sf_links
                     if (mj := jaar_re_pat.search(sf)) and int(mj.group(1)) >= grensdatum.year
                 ]
             elif config.get("subfolder_neem_alle"):
-                pass  # neem alle gevonden subpagina's (sessie-subpagina's zonder jaar in URL)
+                pass
             else:
-                # Jaar niet betrouwbaar in URL: neem laatste N submappen
                 n_sf = max(2, maanden // 12 + 1)
                 sf_links = sf_links[-n_sf:]
             for sf in sf_links:
-                r = _get(sf)
+                r = await _get(sf)
                 if r and r.status_code == 200:
                     paginas.append((r.text, sf))
             if config.get("subfolder_ook_root"):
-                # Ook de listing-pagina zelf toevoegen (voor directe PDFs naast subpagina's)
                 paginas.append((html, listing_url))
             elif not sf_links and config.get("subfolder_fallback_direct"):
-                # Geen subfolders gevonden op deze URL (bijv. huidige-jaar-pagina
-                # in listing_paden naast een archief-URL): behandel als directe listing.
                 paginas.append((html, listing_url))
         else:
             paginas.append((html, listing_url))
@@ -1067,7 +1084,7 @@ def scrape_gemeente(
 
     logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
 
-    alle_resultaten: list[DownloadResult] = []
+    download_docs: list[dict] = []
     for pdf in alle_pdfs:
         datum_str = pdf.get("datum", "")
         bestandsnaam = Path(urlparse(pdf["url"]).path.rstrip("/")).name
@@ -1075,15 +1092,11 @@ def scrape_gemeente(
         if bestandsnaam and not Path(bestandsnaam).suffix:
             bestandsnaam += ".pdf"
         hint = sanitize_filename(f"{datum_str}_{bestandsnaam}" if datum_str else bestandsnaam)
-        result = download_document(
-            SESSION, _config,
-            pdf["url"],
-            gem_dir,
-            filename_hint=hint or pdf["naam"],
-            require_pdf=True,
-        )
-        alle_resultaten.append(result)
+        download_docs.append({"url": pdf["url"], "naam": hint or pdf["naam"]})
 
+    alle_resultaten = await async_download_documents_parallel(
+        SESSION, _config, download_docs, gem_dir, require_pdf=True,
+    )
     gedownload = sum(1 for r in alle_resultaten if r.success and not r.skipped)
     print_summary(alle_resultaten, naam=naam)
     return len(alle_resultaten), gedownload
@@ -1136,6 +1149,7 @@ def main() -> None:
         return
 
     te_verwerken: list[dict] = []
+    init_info: list[tuple[str, bool]] = []  # (base_url, ssl_verify) pairs
 
     if args.base_url:
         netloc = urlparse(args.base_url).netloc
@@ -1144,21 +1158,27 @@ def main() -> None:
             print(f"[!] Geen configuratie gevonden voor {netloc}")
             sys.exit(1)
         te_verwerken = [conf]
-        init_session(args.base_url)
+        init_info = [(args.base_url, True)]
     elif args.gemeente:
         zoek = args.gemeente.lower().replace("-", "").replace(" ", "").replace("ü", "u").replace("û", "u")
         for netloc, conf in GEMEENTEN.items():
             naam_sleutel = conf["naam"].lower().replace("-", "").replace(" ", "").replace("ü", "u").replace("û", "u")
             if zoek in naam_sleutel or zoek in netloc:
                 te_verwerken = [conf]
-                init_session(f"{conf.get('schema', 'https')}://{netloc}",
-                             ssl_verify=conf.get('ssl_verify', True))
+                init_info = [(
+                    f"{conf.get('schema', 'https')}://{netloc}",
+                    conf.get('ssl_verify', True),
+                )]
                 break
         if not te_verwerken:
             print(f"[!] Gemeente '{args.gemeente}' niet gevonden. Gebruik --lijst.")
             sys.exit(1)
     elif args.alle:
         te_verwerken = list(GEMEENTEN.values())
+        init_info = [
+            (f"{conf.get('schema', 'https')}://{netloc}", conf.get('ssl_verify', True))
+            for netloc, conf in GEMEENTEN.items()
+        ]
     else:
         parser.print_help()
         sys.exit(1)
@@ -1166,25 +1186,24 @@ def main() -> None:
     output_root = Path(args.output)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    totaal_geprobeerd = 0
-    totaal_gedownload = 0
+    async def _run() -> None:
+        totaal_geprobeerd = 0
+        totaal_gedownload = 0
+        for conf, (base_url, ssl_verify) in zip(te_verwerken, init_info):
+            await init_session(base_url, ssl_verify=ssl_verify)
+            gevonden, gedownload = await scrape_gemeente(
+                conf,
+                output_root,
+                maanden=args.maanden,
+                document_filter=args.document_filter,
+            )
+            totaal_geprobeerd += gevonden
+            totaal_gedownload += gedownload
+        if SESSION is not None:
+            await SESSION.close()
+        print(f"\nKlaar. Totaal: {totaal_geprobeerd} geprobeerd, {totaal_gedownload} gedownload.")
 
-    for conf in te_verwerken:
-        if args.alle and not args.base_url:
-            netloc = next(k for k, v in GEMEENTEN.items() if v is conf)
-            init_session(f"{conf.get('schema', 'https')}://{netloc}",
-                         ssl_verify=conf.get('ssl_verify', True))
-
-        gevonden, gedownload = scrape_gemeente(
-            conf,
-            output_root,
-            maanden=args.maanden,
-            document_filter=args.document_filter,
-        )
-        totaal_geprobeerd += gevonden
-        totaal_gedownload += gedownload
-
-    print(f"\nKlaar. Totaal: {totaal_geprobeerd} geprobeerd, {totaal_gedownload} gedownload.")
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

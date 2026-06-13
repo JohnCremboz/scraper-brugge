@@ -51,9 +51,9 @@ Patroon per bestand: `session.get()` → `await session.get()`, `def main()` →
 
 ### Stap 3 — Playwright scrapers (sync → async_playwright)
 - [ ] 3a `scraper.py`
-- [ ] 3b `scraper_deliberations.py` ← grootste impact (128 gemeenten)
-- [ ] 3c `scraper_onlinesmartcities.py`
-- [ ] 3d `scraper_wordpress.py`
+- [x] 3b `scraper_deliberations.py` ← grootste impact (128 gemeenten)
+- [x] 3c `scraper_onlinesmartcities.py`
+- [x] 3d `scraper_wordpress.py`
 
 ### Stap 4 — `scraper_groep.py` (optioneel)
 - [ ] Platform-bewuste batching (deliberations.be apart groeperen)
