@@ -32,7 +32,7 @@ Patroon per bestand: `session.get()` → `await session.get()`, `def main()` →
 - [x] 2b `scraper_ibabs.py`
 - [x] 2c `scraper_lblod.py`
 - [x] 2d `scraper_imio.py`
-- [ ] 2e `scraper_brussel.py`
+- [x] 2e `scraper_brussel.py`
 - [ ] 2f `scraper_docodis.py`
 - [ ] 2g `scraper_gelinktnotuleren.py`
 - [ ] 2h `scraper_icordis.py`
