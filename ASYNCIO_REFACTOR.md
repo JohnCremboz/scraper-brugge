@@ -30,7 +30,7 @@ Patroon per bestand: `session.get()` → `await session.get()`, `def main()` →
 
 - [x] 2a `scraper_drupal.py`
 - [x] 2b `scraper_ibabs.py`
-- [ ] 2c `scraper_lblod.py`
+- [x] 2c `scraper_lblod.py`
 - [ ] 2d `scraper_imio.py`
 - [ ] 2e `scraper_brussel.py`
 - [ ] 2f `scraper_docodis.py`
