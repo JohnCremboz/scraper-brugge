@@ -28,7 +28,7 @@ Async versies toegevoegd naast sync (sync blijft voor niet-gemigreerde scrapers)
 ### Stap 2 — Pure HTTP scrapers (geen Playwright)
 Patroon per bestand: `session.get()` → `await session.get()`, `def main()` → `async def main()` + `asyncio.run(main())`
 
-- [ ] 2a `scraper_drupal.py`
+- [x] 2a `scraper_drupal.py`
 - [ ] 2b `scraper_ibabs.py`
 - [ ] 2c `scraper_lblod.py`
 - [ ] 2d `scraper_imio.py`
