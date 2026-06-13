@@ -16,14 +16,14 @@ Asyncio-winst zit binnen elk subprocess, niet tussen gemeenten.
 - [x] `aiohttp` toevoegen aan `pyproject.toml`
 - [x] `uv sync`
 
-### Stap 1 — `base_scraper.py` kern [ ]
-Vervang sync → async:
-- [ ] `create_session()` → `create_async_session()` retourneert `aiohttp.ClientSession`
-- [ ] `rate_limited_get()` → `async def`
-- [ ] `robust_get()` → `async def`
-- [ ] `download_document()` → `async def`
-- [ ] `download_documents_parallel()` → `asyncio.gather()`
-- [ ] Verwijder `threading`, `ThreadPoolExecutor`, `requests` imports
+### Stap 1 — `base_scraper.py` kern [x]
+Async versies toegevoegd naast sync (sync blijft voor niet-gemigreerde scrapers):
+- [x] `create_async_session()` → `aiohttp.ClientSession` met TCPConnector
+- [x] `async_rate_limit()` → asyncio.Lock + asyncio.sleep
+- [x] `async_download_document()` → aiohttp streaming, executor voor content filter
+- [x] `async_download_documents_parallel()` → asyncio.gather + Semaphore
+- [x] `_extract_filename()` refactored → accepteert `Mapping[str,str]` i.p.v. Response
+- [x] `max_parallel_downloads` default verhoogd 5 → 8
 
 ### Stap 2 — Pure HTTP scrapers (geen Playwright)
 Patroon per bestand: `session.get()` → `await session.get()`, `def main()` → `async def main()` + `asyncio.run(main())`
