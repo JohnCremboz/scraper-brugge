@@ -25,18 +25,21 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
 import sys
 import unicodedata
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import requests
+import aiohttp
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
     print_summary,
     sanitize_filename,
@@ -48,9 +51,6 @@ from base_scraper import (
 
 _API_BASE = "https://www.conseilcommunal.be/ApiCitoyen/public/v1"
 
-# iDélibé commune ID → (naam, heeft_documenten)
-# heeft_documenten=True → gemeente heeft PVs of notes de synthèse
-# heeft_documenten=False → enkel agenda/prep, wordt toch gescand maar geeft doorgaans 0 resultaten
 GEMEENTEN: dict[int, str] = {
     2: "Waterloo",
     8: "Pecq",
@@ -93,9 +93,8 @@ GEMEENTEN: dict[int, str] = {
     104: "Ouffet",
 }
 
-# Keywords die een PV of besluitenoverzicht aanduiden (inclusie, lowercase)
 _PV_KEYWORDS = (
-    "pv",              # "PV citoyen", "PV CC...", "PVpublic..."
+    "pv",
     "procès-verbal",
     "proces-verbal",
     "procès verbal",
@@ -105,7 +104,6 @@ _PV_KEYWORDS = (
     "note explicative",
 )
 
-# Keywords die een agenda/prep aanduiden (exclusie, lowercase)
 _SKIP_KEYWORDS = (
     "ordre du jour",
     "preparatif",
@@ -114,9 +112,15 @@ _SKIP_KEYWORDS = (
     "invitation",
 )
 
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 _OUTPUT_ROOT = Path("pdfs")
+
+
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
 
 
 # ---------------------------------------------------------------------------
@@ -146,20 +150,25 @@ def gemeente_id_uit_url(url: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def init_sessie() -> None:
+async def init_sessie() -> None:
     global SESSION, _config
+    if SESSION is not None:
+        await SESSION.close()
     _config = ScraperConfig(base_url=_API_BASE, rate_limit_delay=0.2)
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
 
 
-def _get(pad: str) -> requests.Response | None:
-    """GET helper met retries."""
+async def _get_json(pad: str) -> dict | None:
+    """JSON GET helper."""
+    if SESSION is None or _config is None:
+        return None
     url = pad if pad.startswith("http") else f"{_API_BASE}{pad}"
     try:
-        r = SESSION.get(url, timeout=20)
-        r.raise_for_status()
-        return r
-    except requests.RequestException as e:
+        await async_rate_limit(_config)
+        async with SESSION.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            resp.raise_for_status()
+            return await resp.json(content_type=None)
+    except Exception as e:
         logger.warning(f"Request fout voor {url}: {e}")
         return None
 
@@ -172,17 +181,14 @@ def _is_besluit(titre: str, bestandsnaam: str) -> bool:
     """True als dit een PV of note de synthèse is (geen agenda/prep)."""
     t = (titre or bestandsnaam or "").lower()
 
-    # Explicitly skip agenda/prep documents
     for skip in _SKIP_KEYWORDS:
         if skip in t:
             return False
 
-    # Accept PV/note keywords
     for kw in _PV_KEYWORDS:
         if kw in t:
             return True
 
-    # Accept short "pv…" prefix in bestandsnaam (bijv. "PVpublic20260211.pdf")
     fname = (bestandsnaam or "").lower()
     if re.match(r"^pv[\w]", fname):
         return True
@@ -194,34 +200,29 @@ def _is_besluit(titre: str, bestandsnaam: str) -> bool:
 # API-aanroepen
 # ---------------------------------------------------------------------------
 
-def haal_zittingen(commune_id: int) -> list[dict]:
+async def haal_zittingen(commune_id: int) -> list[dict]:
     """Haal alle zittingen op voor een commune."""
-    r = _get(f"/commune/{commune_id}/seances")
-    if r is None:
+    data = await _get_json(f"/commune/{commune_id}/seances")
+    if data is None:
         return []
     try:
-        data = r.json().get("Data", {})
-        return data.get("Sessions", [])
+        return data.get("Data", {}).get("Sessions", [])
     except Exception as e:
         logger.warning(f"JSON-fout bij zittingen commune {commune_id}: {e}")
         return []
 
 
-def haal_documenten_van_zitting(commune_id: int, zitting_id: int) -> list[dict]:
-    """
-    Haal PV/note-documenten op voor een zitting.
-    Geeft lijst van {id, naam, bestandsnaam, datum}.
-    """
-    r = _get(f"/commune/{commune_id}/seance/{zitting_id}")
-    if r is None:
+async def haal_documenten_van_zitting(commune_id: int, zitting_id: int) -> list[dict]:
+    """Haal PV/note-documenten op voor een zitting."""
+    data = await _get_json(f"/commune/{commune_id}/seance/{zitting_id}")
+    if data is None:
         return []
     try:
-        data = r.json().get("Data", {})
+        punten = data.get("Data", {}).get("Points", [])
     except Exception as e:
         logger.warning(f"JSON-fout bij zitting {zitting_id}: {e}")
         return []
 
-    punten = data.get("Points", [])
     docs = []
     for p in punten:
         if not p.get("isFile"):
@@ -233,7 +234,6 @@ def haal_documenten_van_zitting(commune_id: int, zitting_id: int) -> list[dict]:
         if not _is_besluit(titre, fname):
             continue
 
-        # Datum uit SeanceDate veld (ISO string "2025-12-29T20:00:00")
         datum = None
         seance_date = p.get("SeanceDate")
         if seance_date:
@@ -255,8 +255,8 @@ def haal_documenten_van_zitting(commune_id: int, zitting_id: int) -> list[dict]:
 # Scraper hoofdfunctie
 # ---------------------------------------------------------------------------
 
-def scrape_gemeente(commune_id: int, naam: str, maanden: int = 12,
-                    document_filter: str | None = None) -> tuple[int, int]:
+async def scrape_gemeente(commune_id: int, naam: str, maanden: int = 12,
+                          document_filter: str | None = None) -> tuple[int, int]:
     """Download PV/note-documenten voor één iDélibé-gemeente."""
     grensdatum = date.today() - timedelta(days=maanden * 30)
     logger.info(f"▶  {naam}  (grensdatum={grensdatum})")
@@ -264,14 +264,14 @@ def scrape_gemeente(commune_id: int, naam: str, maanden: int = 12,
     gem_dir = _OUTPUT_ROOT / sanitize_filename(naam)
     gem_dir.mkdir(parents=True, exist_ok=True)
 
-    zittingen = haal_zittingen(commune_id)
+    zittingen = await haal_zittingen(commune_id)
     if not zittingen:
         logger.warning(f"  Geen zittingen gevonden voor {naam}")
         return 0, 0
 
     alle_docs: list[dict] = []
     for z in zittingen:
-        docs = haal_documenten_van_zitting(commune_id, z["Id"])
+        docs = await haal_documenten_van_zitting(commune_id, z["Id"])
         for d in docs:
             if d["datum"] is not None and d["datum"] < grensdatum:
                 continue
@@ -283,37 +283,24 @@ def scrape_gemeente(commune_id: int, naam: str, maanden: int = 12,
 
     logger.info(f"  {len(alle_docs)} document(en) gevonden")
 
-    totaal = nieuw = overgeslagen = mislukt = 0
-    resultaten = []
-
+    download_docs: list[dict] = []
     for d in alle_docs:
-        totaal += 1
-        download_url = f"{_API_BASE}/point/{d['point_id']}"
-
         ext = Path(d["bestandsnaam"]).suffix.lower() or ".pdf"
         doc_naam = d["naam"]
         if not doc_naam.lower().endswith(ext):
             doc_naam = f"{doc_naam}{ext}"
+        download_docs.append({
+            "url": f"{_API_BASE}/point/{d['point_id']}",
+            "naam": doc_naam,
+        })
 
-        result = download_document(
-            SESSION, _config,
-            download_url,
-            gem_dir,
-            filename_hint=doc_naam,
-            require_pdf=False,   # ook DOCX accepteren
-        )
-        resultaten.append(result)
-
-        if result.skipped:
-            overgeslagen += 1
-        elif result.success:
-            nieuw += 1
-        else:
-            mislukt += 1
-            logger.warning(f"  Mislukt: {download_url} — {d['naam']}")
+    resultaten = await async_download_documents_parallel(
+        SESSION, _config, download_docs, gem_dir, require_pdf=False,
+    )
 
     print_summary(resultaten, naam)
-    return totaal, nieuw
+    nieuw = sum(1 for r in resultaten if r.success and not r.skipped)
+    return len(resultaten), nieuw
 
 
 # ---------------------------------------------------------------------------
@@ -331,36 +318,56 @@ def main() -> None:
                         help="Filter op documentnaam (bijv. 'PV')")
     parser.add_argument("--output", default="pdfs",
                         help="Output-directory (standaard: pdfs/)")
+    # Compatibiliteit scraper_groep.py
+    parser.add_argument("--base-url", default="", help="Niet van toepassing")
+    parser.add_argument("--orgaan", default="", help="Niet van toepassing")
+    parser.add_argument("--agendapunten", action="store_true", help="Niet van toepassing")
+    parser.add_argument("--lijst-organen", action="store_true", help="Niet van toepassing")
     args = parser.parse_args()
 
     global _OUTPUT_ROOT
     _OUTPUT_ROOT = Path(args.output)
     _OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
-    if args.lijst:
+    if args.lijst or args.lijst_organen:
         print("Ondersteunde gemeenten (iDélibé):")
         for cid, naam in sorted(GEMEENTEN.items(), key=lambda x: x[1]):
             print(f"  {naam:<28}  id={cid}")
         return
 
-    init_sessie()
+    # Haal commune_id uit --base-url indien aanwezig
+    base_url_id: int | None = None
+    if args.base_url:
+        base_url_id = gemeente_id_uit_url(args.base_url)
 
-    if args.gemeente:
-        cid = gemeente_id_uit_naam(args.gemeente)
-        if cid is None:
-            logger.error(f"Gemeente '{args.gemeente}' niet gevonden. Gebruik --lijst.")
-            sys.exit(1)
-        scrape_gemeente(cid, GEMEENTEN[cid], args.maanden, args.document_filter)
+    async def _run() -> None:
+        await init_sessie()
 
-    elif args.alle:
-        totaal_g = totaal_n = 0
-        for cid, naam in sorted(GEMEENTEN.items(), key=lambda x: x[1]):
-            g, n = scrape_gemeente(cid, naam, args.maanden, args.document_filter)
-            totaal_g += g
-            totaal_n += n
-        logger.info(f"\nTotaal: {totaal_g} geprobeerd, {totaal_n} gedownload.")
-    else:
-        parser.print_help()
+        if base_url_id is not None:
+            naam = GEMEENTEN.get(base_url_id, f"commune_{base_url_id}")
+            await scrape_gemeente(base_url_id, naam, args.maanden, args.document_filter)
+        elif args.gemeente:
+            cid = gemeente_id_uit_naam(args.gemeente)
+            if cid is None:
+                logger.error(f"Gemeente '{args.gemeente}' niet gevonden. Gebruik --lijst.")
+                if SESSION is not None:
+                    await SESSION.close()
+                sys.exit(1)
+            await scrape_gemeente(cid, GEMEENTEN[cid], args.maanden, args.document_filter)
+        elif args.alle:
+            totaal_g = totaal_n = 0
+            for cid, naam in sorted(GEMEENTEN.items(), key=lambda x: x[1]):
+                g, n = await scrape_gemeente(cid, naam, args.maanden, args.document_filter)
+                totaal_g += g
+                totaal_n += n
+            logger.info(f"\nTotaal: {totaal_g} geprobeerd, {totaal_n} gedownload.")
+        else:
+            parser.print_help()
+
+        if SESSION is not None:
+            await SESSION.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

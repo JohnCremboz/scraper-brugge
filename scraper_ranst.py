@@ -10,32 +10,32 @@ Gebruik:
 """
 
 import argparse
+import asyncio
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
-from tqdm import tqdm
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    sanitize_filename,
-    download_document as base_download_document,
+    async_download_document,
+    async_rate_limit,
+    create_async_session,
     DownloadResult,
     logger,
-    rate_limited_get,
+    sanitize_filename,
 )
 
 BASE_URL = "https://ranst.meetingburger.net"
 
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
-# Maanden in het Nederlands → nummer
 MAAND_NL = {
     "januari": 1, "februari": 2, "maart": 3, "april": 4,
     "mei": 5, "juni": 6, "juli": 7, "augustus": 8,
@@ -43,14 +43,34 @@ MAAND_NL = {
 }
 
 
-def init_session():
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session() -> None:
     """Initialiseer de sessie met base_scraper configuratie."""
     global SESSION, _config
+    if SESSION is not None:
+        await SESSION.close()
     _config = ScraperConfig(base_url=BASE_URL, output_dir=Path("."))
+    SESSION = create_async_session(_config)
+
+
+async def _get(url: str, timeout: int = 30) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
     try:
-        SESSION = create_session(_config)
-    except Exception as e:
-        logger.warning("Sessie-initialisatie mislukt: %s", e)
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 def parse_datum_uit_titel(titel: str) -> datetime | None:
@@ -74,10 +94,7 @@ def parse_datum_uit_titel(titel: str) -> datetime | None:
     return None
 
 
-
-
-
-def haal_file_links_van_pagina(url: str) -> list[dict]:
+async def haal_file_links_van_pagina(url: str) -> list[dict]:
     """
     Haal alle HandleFile.ashx links op van een pagina.
     Sla 'Download'-knop-duplicaten over door te dedupliceren op file-id.
@@ -86,25 +103,22 @@ def haal_file_links_van_pagina(url: str) -> list[dict]:
     documenten = []
     seen_ids: set[str] = set()
 
-    try:
-        full_url = urljoin(BASE_URL, url) if not url.startswith("http") else url
-        resp = rate_limited_get(SESSION, full_url, _config, timeout=30)
-        if resp.status_code != 200:
-            return []
+    full_url = urljoin(BASE_URL, url) if not url.startswith("http") else url
+    resp = await _get(full_url, timeout=30)
+    if not resp or resp.status_code != 200:
+        return []
 
+    try:
         soup = BeautifulSoup(resp.text, "lxml")
         for link in soup.find_all("a", href=True):
             href = link["href"]
-            # Alleen HandleFile.ashx links, geen 'download=1' duplicaten hier
             if "HandleFile.ashx" not in href:
                 continue
-            # Sla de pure "Download"-knoppen en YouTube/externe links over
             tekst = link.get_text(strip=True)
             if tekst.lower() == "download":
                 continue
             if "youtube.com" in href or "youtu.be" in href:
                 continue
-            # Extraheer file id om te dedupliceren
             m = re.search(r'[?&]id=([^&]+)', href)
             if not m:
                 continue
@@ -112,42 +126,35 @@ def haal_file_links_van_pagina(url: str) -> list[dict]:
             if file_id in seen_ids:
                 continue
             seen_ids.add(file_id)
-
-            # Gebruik bestandsnaam als tekst, anders id
             naam = tekst if tekst else file_id
             documenten.append({"url": href, "naam": naam})
-
     except Exception as e:
         print(f"      [!] Fout ophalen {url}: {e}")
 
     return documenten
 
 
-def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
+async def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
     """
     Controleer of een vergadering beschikbare inhoud heeft.
     Geeft (heeft_inhoud, titel) terug.
     """
-    try:
-        full_url = urljoin(BASE_URL, vergadering_url) if not vergadering_url.startswith("http") else vergadering_url
-        resp = rate_limited_get(SESSION, full_url, _config, timeout=15)
-        if resp.status_code != 200:
-            return False, ""
+    full_url = urljoin(BASE_URL, vergadering_url) if not vergadering_url.startswith("http") else vergadering_url
+    resp = await _get(full_url, timeout=15)
+    if not resp or resp.status_code != 200:
+        return False, ""
 
+    try:
         soup = BeautifulSoup(resp.text, "lxml")
         tekst = soup.get_text()
 
-        # Pagina nog niet gepubliceerd
         if "nog niet bekendgemaakt" in tekst or "niet beschikbaar" in tekst.lower():
             return False, ""
 
-        # Titel uit <title> of breadcrumb
         title_tag = soup.find("title")
         titel = title_tag.get_text(strip=True) if title_tag else ""
-        # Verwijder site-naam suffix
         titel = re.sub(r'\s*[|–-].*meetingburger.*$', '', titel, flags=re.IGNORECASE).strip()
 
-        # Fallback: gebruik h1
         if not titel:
             h1 = soup.find("h1")
             if h1:
@@ -159,14 +166,12 @@ def vergadering_heeft_inhoud(vergadering_url: str) -> tuple[bool, str]:
             titel = vergadering_url.rstrip("/").split("/")[-1]
 
         return True, titel
-
     except Exception:
         return False, ""
 
 
-def vergadering_is_gepubliceerd(vergadering_url: str) -> bool:
-    """Compatibiliteitshelper voor codepaden zonder vooraf gekende titel."""
-    heeft_inhoud, _ = vergadering_heeft_inhoud(vergadering_url)
+async def vergadering_is_gepubliceerd(vergadering_url: str) -> bool:
+    heeft_inhoud, _ = await vergadering_heeft_inhoud(vergadering_url)
     return heeft_inhoud
 
 
@@ -179,7 +184,6 @@ def _html_naar_pdf(html_tekst: str, pdf_pad: Path) -> bool:
         tag.decompose()
     body = soup_clean.find("main") or soup_clean.find("article") or soup_clean.find("body")
     inhoud = str(body) if body else html_tekst
-    # Expliciete UTF-8 declaratie zodat PyMuPDF speciale tekens correct verwerkt
     schone_html = f'<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>{inhoud}</body></html>'
 
     story = fitz.Story(html=schone_html)
@@ -196,26 +200,24 @@ def _html_naar_pdf(html_tekst: str, pdf_pad: Path) -> bool:
     return True
 
 
-def sla_notulen_als_pdf_op(notulen_url: str, output_pad: Path, vergadering_titel: str) -> bool:
+async def sla_notulen_als_pdf_op(notulen_url: str, output_pad: Path, vergadering_titel: str) -> bool:
     """
     Haal de notulen-HTML op, filter op mandaatrelevantie en sla op als PDF.
     Geeft True terug als een bestand opgeslagen of al aanwezig was.
     """
     full_url = urljoin(BASE_URL, notulen_url) if not notulen_url.startswith("http") else notulen_url
 
-    try:
-        resp = rate_limited_get(SESSION, full_url, _config, timeout=30)
-        if resp.status_code != 200:
-            return False
+    resp = await _get(full_url, timeout=30)
+    if not resp or resp.status_code != 200:
+        return False
 
+    try:
         soup = BeautifulSoup(resp.text, "lxml")
         tekst = soup.get_text(" ", strip=True)
 
-        # Pagina niet gepubliceerd of leeg
         if "nog niet bekendgemaakt" in tekst or len(tekst.strip()) < 200:
             return False
 
-        # Bestandsnaam op basis van vergaderingstitel
         veilige_titel = re.sub(r'[\\/*?:"<>|]', '', vergadering_titel)[:60].strip()
         bestandsnaam = sanitize_filename(f"notulen_{veilige_titel}.pdf")
         output_pad.mkdir(parents=True, exist_ok=True)
@@ -224,13 +226,13 @@ def sla_notulen_als_pdf_op(notulen_url: str, output_pad: Path, vergadering_titel
         if bestand.exists():
             return True
 
-        # Content filter op tekst
         if _config and _config.content_filter:
             from mandaat_filter import is_relevant
             if not is_relevant(tekst):
                 return False
 
-        if _html_naar_pdf(resp.text, bestand):
+        loop = asyncio.get_event_loop()
+        if await loop.run_in_executor(None, _html_naar_pdf, resp.text, bestand):
             print(f"      [OK] {bestandsnaam} (notulen -> PDF)")
             return True
         return False
@@ -240,7 +242,7 @@ def sla_notulen_als_pdf_op(notulen_url: str, output_pad: Path, vergadering_titel
         return False
 
 
-def verwerk_vergadering(
+async def verwerk_vergadering(
     vergadering_url: str,
     output_pad: Path,
     titel: str = "",
@@ -253,25 +255,19 @@ def verwerk_vergadering(
     """
     full_url = urljoin(BASE_URL, vergadering_url) if not vergadering_url.startswith("http") else vergadering_url
 
-    # Als geen bekende titel, controleer of gepubliceerd (snelle check)
     if not titel:
-        if not vergadering_is_gepubliceerd(full_url):
+        if not await vergadering_is_gepubliceerd(full_url):
             return 0
-        # Probeer titel uit de pagina-span te halen
-        try:
-            resp = rate_limited_get(SESSION, full_url, _config, timeout=15)
+        resp = await _get(full_url, timeout=15)
+        if resp:
             soup = BeautifulSoup(resp.text, "lxml")
             for span in soup.find_all("span"):
                 t = span.get_text(strip=True)
                 if len(t) > 10 and any(m in t.lower() for m in ["gemeenteraad", "college", "bureau", "raad", "commissie", "burgemeester"]):
                     titel = re.sub(r'\s*\([^)]+\)\s*$', '', t).strip()
                     break
-        except Exception:
-            pass
         if not titel:
             titel = full_url.rstrip("/").split("/")[-1]
-
-    verg_id = full_url.rstrip("/").split("/")[-1]
 
     print(f"\n    [{titel}]")
 
@@ -279,39 +275,6 @@ def verwerk_vergadering(
     verwerkt_ids: set[str] = set()
     gebruikte_namen: set[str] = set()
 
-    def verwerk_doc(doc: dict, bestemming: Path) -> bool:
-        m = re.search(r'[?&]id=([^&]+)', doc["url"])
-        file_id = m.group(1) if m else doc["url"]
-        if file_id in verwerkt_ids:
-            return False
-        if document_filter and document_filter.lower() not in doc["naam"].lower():
-            return False
-        verwerkt_ids.add(file_id)
-        naam_hint = sanitize_filename(doc["naam"])
-        # Voeg UUID-fragment toe als naam al gebruikt is (ander bestand, zelfde naam)
-        if naam_hint in gebruikte_namen:
-            id_fragment = file_id.replace("-", "")[:8]
-            if "." in naam_hint:
-                basis, ext = naam_hint.rsplit(".", 1)
-                naam_hint = f"{basis}_{id_fragment}.{ext}"
-            else:
-                naam_hint = f"{naam_hint}_{id_fragment}"
-        gebruikte_namen.add(naam_hint)
-
-        if "download=1" not in doc["url"]:
-            sep = "&" if "?" in doc["url"] else "?"
-            dl_url = doc["url"] + sep + "download=1"
-        else:
-            dl_url = doc["url"]
-
-        result = base_download_document(SESSION, _config, dl_url, bestemming, naam_hint, require_pdf=False)
-        if result.success and not result.skipped:
-            print(f"      [OK] {result.path.name[:70] if result.path else naam_hint[:70]}")
-        elif not result.success:
-            print(f"      [!] Fout: {result.error}")
-        return result.success
-
-    # Vergaderingspagina zelf + alleen gepubliceerde subpagina's uit de lijstpagina.
     subpaden = [full_url]
     if subpagina_urls:
         subpaden.extend(subpagina_urls)
@@ -319,13 +282,41 @@ def verwerk_vergadering(
         subpaden.extend([f"{full_url}/agenda", f"{full_url}/besluitenlijst", f"{full_url}/notulen"])
 
     notulen_url = f"{full_url}/notulen"
-    for subpad in dict.fromkeys(subpaden):
-        for doc in haal_file_links_van_pagina(subpad):
-            if verwerk_doc(doc, output_pad):
-                downloads += 1
 
-    # Notulen opslaan als PDF (bevat de eigenlijke besluiten, ook zonder PDF-bijlagen)
-    if sla_notulen_als_pdf_op(notulen_url, output_pad, titel):
+    for subpad in dict.fromkeys(subpaden):
+        docs = await haal_file_links_van_pagina(subpad)
+        for doc in docs:
+            m = re.search(r'[?&]id=([^&]+)', doc["url"])
+            file_id = m.group(1) if m else doc["url"]
+            if file_id in verwerkt_ids:
+                continue
+            if document_filter and document_filter.lower() not in doc["naam"].lower():
+                continue
+            verwerkt_ids.add(file_id)
+            naam_hint = sanitize_filename(doc["naam"])
+            if naam_hint in gebruikte_namen:
+                id_fragment = file_id.replace("-", "")[:8]
+                if "." in naam_hint:
+                    basis, ext = naam_hint.rsplit(".", 1)
+                    naam_hint = f"{basis}_{id_fragment}.{ext}"
+                else:
+                    naam_hint = f"{naam_hint}_{id_fragment}"
+            gebruikte_namen.add(naam_hint)
+
+            if "download=1" not in doc["url"]:
+                sep = "&" if "?" in doc["url"] else "?"
+                dl_url = doc["url"] + sep + "download=1"
+            else:
+                dl_url = doc["url"]
+
+            result = await async_download_document(SESSION, _config, dl_url, output_pad, naam_hint, require_pdf=False)
+            if result.success and not result.skipped:
+                print(f"      [OK] {result.path.name[:70] if result.path else naam_hint[:70]}")
+                downloads += 1
+            elif not result.success:
+                print(f"      [!] Fout: {result.error}")
+
+    if await sla_notulen_als_pdf_op(notulen_url, output_pad, titel):
         downloads += 1
 
     if downloads == 0:
@@ -334,31 +325,23 @@ def verwerk_vergadering(
     return downloads
 
 
-def haal_organen() -> list[dict]:
-    """
-    Haal alle beschikbare organen op van de hoofdpagina.
-    Extraheert unieke slugs uit vergaderingslinks (/{slug}/{UUID}).
-    Geeft lijst van {naam, slug, url} terug.
-    """
+async def haal_organen() -> list[dict]:
+    """Haal alle beschikbare organen op van de hoofdpagina."""
     organen = []
     gezien_slugs: set[str] = set()
     uuid_re = re.compile(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
         re.IGNORECASE
     )
-    datum_re = re.compile(
-        r'\s+\d{1,2}\s+\w+\s+\d{4}.*$', re.IGNORECASE
-    )
+    datum_re = re.compile(r'\s+\d{1,2}\s+\w+\s+\d{4}.*$', re.IGNORECASE)
     skip_slugs = {"search", "bekendmakingen", "pages", ""}
 
-    try:
-        # Haal zowel recente als alle vergaderingen op
-        for url in [BASE_URL, f"{BASE_URL}?AlleVergaderingen=True"]:
-            resp = rate_limited_get(SESSION, url, _config, timeout=15)
-            if resp.status_code != 200:
-                continue
+    for url in [BASE_URL, f"{BASE_URL}?AlleVergaderingen=True"]:
+        resp = await _get(url, timeout=15)
+        if not resp or resp.status_code != 200:
+            continue
+        try:
             soup = BeautifulSoup(resp.text, "lxml")
-
             for link in soup.find_all("a", href=True):
                 href = link["href"]
                 if not href.startswith("http"):
@@ -369,7 +352,6 @@ def haal_organen() -> list[dict]:
                     continue
 
                 delen = [s for s in parsed.path.strip("/").split("/") if s]
-                # Zoek links met patroon /{slug}/{UUID}
                 if len(delen) != 2:
                     continue
                 slug, mogelijke_uuid = delen[0], delen[1]
@@ -377,23 +359,14 @@ def haal_organen() -> list[dict]:
                     if slug in gezien_slugs:
                         continue
                     gezien_slugs.add(slug)
-
-                    # Orgaannaam: verwijder datum-gedeelte uit linktekst
                     tekst = link.get_text(strip=True)
                     naam = datum_re.sub("", tekst).strip()
                     if not naam:
                         naam = slug
+                    organen.append({"naam": naam, "slug": slug, "url": f"{BASE_URL}/{slug}"})
+        except Exception as e:
+            print(f"  [!] Fout laden organen: {e}")
 
-                    organen.append({
-                        "naam": naam,
-                        "slug": slug,
-                        "url": f"{BASE_URL}/{slug}",
-                    })
-
-    except Exception as e:
-        print(f"  [!] Fout laden organen: {e}")
-
-    # Dedupliceer op slug (naam van eerste gevonden instantie)
     uniek: dict[str, dict] = {}
     for org in organen:
         if org["slug"] not in uniek:
@@ -401,11 +374,8 @@ def haal_organen() -> list[dict]:
     return list(uniek.values())
 
 
-def haal_vergadering_links(orgaan_slug: str) -> list[dict]:
-    """
-    Haal alle vergaderingslinks op voor een orgaan via /{slug}?AlleVergaderingen=True.
-    Geeft lijst van {url, titel} terug, gesorteerd van nieuwst naar oudst.
-    """
+async def haal_vergadering_links(orgaan_slug: str) -> list[dict]:
+    """Haal alle vergaderingslinks op voor een orgaan."""
     items: list[dict] = []
     gezien: set[str] = set()
     per_url: dict[str, dict] = {}
@@ -414,19 +384,16 @@ def haal_vergadering_links(orgaan_slug: str) -> list[dict]:
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
         re.IGNORECASE
     )
-    # Datum-suffix in linktekst verwijderen: tekst bevat bv. "Gemeenteraad 23 februari..."
-    # Bewaar de volledige tekst als titel
 
     for url in [
         f"{BASE_URL}/{orgaan_slug}",
         f"{BASE_URL}/{orgaan_slug}?AlleVergaderingen=True",
     ]:
+        resp = await _get(url, timeout=30)
+        if not resp or resp.status_code != 200:
+            continue
         try:
-            resp = rate_limited_get(SESSION, url, _config, timeout=30)
-            if resp.status_code != 200:
-                continue
             soup = BeautifulSoup(resp.text, "lxml")
-
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 full = urljoin(BASE_URL, href)
@@ -453,16 +420,15 @@ def haal_vergadering_links(orgaan_slug: str) -> list[dict]:
                     sub_url = f"{clean_url}/{delen[2]}"
                     if sub_url not in per_url[clean_url]["subpagina_urls"]:
                         per_url[clean_url]["subpagina_urls"].append(sub_url)
-
         except Exception as e:
             print(f"  [!] Fout ophalen vergaderingen {url}: {e}")
 
     return items
 
 
-def toon_organen():
+async def toon_organen() -> None:
     """Toon alle beschikbare organen."""
-    organen = haal_organen()
+    organen = await haal_organen()
     if not organen:
         print("Geen organen gevonden.")
         return
@@ -472,12 +438,12 @@ def toon_organen():
         print(f"  - {org['naam']}  (/{org['slug']})")
 
 
-def scrape(
+async def scrape(
     orgaan: str | None,
     output_map: str,
     maanden: int,
     document_filter: str | None = None,
-):
+) -> None:
     """Hoofdfunctie voor het scrapen."""
     output_pad = Path(output_map)
     output_pad.mkdir(parents=True, exist_ok=True)
@@ -492,19 +458,14 @@ def scrape(
     print(f"  Output:  {output_pad.resolve()}")
     print(f"{'='*60}\n")
 
-    alle_organen = haal_organen()
+    alle_organen = await haal_organen()
 
     if not alle_organen:
         print("[!] Geen organen gevonden op de hoofdpagina. Controleer de verbinding.")
         sys.exit(1)
 
-    # Filter op orgaan indien opgegeven
     if orgaan:
-        # Gebruik woordgrens-matching zodat "Gemeenteraad" niet ook
-        # "Gemeenteraadscommissie" matcht (maar "Raad voor maatschappelijk" wel)
-        kwb_patroon = re.compile(
-            r'(?i)(^|\s)' + re.escape(orgaan) + r'(\s|$)'
-        )
+        kwb_patroon = re.compile(r'(?i)(^|\s)' + re.escape(orgaan) + r'(\s|$)')
         te_verwerken = [
             o for o in alle_organen
             if kwb_patroon.search(o["naam"]) or o["naam"].lower() == orgaan.lower()
@@ -523,23 +484,22 @@ def scrape(
         print(f"\n[Orgaan] {org['naam']}  (/{org['slug']})")
         print(f"  (vergaderingen ophalen...)")
 
-        vergadering_items = haal_vergadering_links(org["slug"])
+        vergadering_items = await haal_vergadering_links(org["slug"])
         print(f"  {len(vergadering_items)} vergaderingen gevonden\n")
 
-        for idx, item in enumerate(tqdm(vergadering_items, desc=f"  {org['naam'][:30]}", unit="verg"), 1):
+        for idx, item in enumerate(vergadering_items, 1):
             verg_url = item["url"]
             titel = item["titel"]
 
-            # Datumfilter: vergelijking op basis van bekende titel
             datum = parse_datum_uit_titel(titel)
             if datum and datum < drempelDatum:
-                tqdm.write(f"  (drempelDatum bereikt bij '{titel}', stop)")
+                print(f"  (drempelDatum bereikt bij '{titel}', stop)")
                 break
 
             datum_str = datum.strftime("%Y-%m-%d") if datum else "onbekend"
             vergadering_pad = output_pad / datum_str
 
-            n = verwerk_vergadering(
+            n = await verwerk_vergadering(
                 verg_url,
                 vergadering_pad,
                 titel=titel,
@@ -591,30 +551,39 @@ Voorbeelden:
     args = parser.parse_args()
 
     if args.base_url:
-        global BASE_URL, _config
+        global BASE_URL
         BASE_URL = args.base_url.rstrip("/")
-
-    init_session()
 
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"
 
-    if args.lijst_organen:
-        toon_organen()
-        return
+    async def _run() -> None:
+        await init_session()
 
-    if not args.orgaan and not args.alle:
-        print("Geef een orgaan op (--orgaan) of gebruik --alle voor alle organen.")
-        print("Gebruik --lijst-organen om beschikbare organen te bekijken.\n")
-        parser.print_help()
-        sys.exit(1)
+        if args.lijst_organen:
+            await toon_organen()
+            if SESSION is not None:
+                await SESSION.close()
+            return
 
-    scrape(
-        orgaan=None if args.alle else args.orgaan,
-        output_map=args.output,
-        maanden=args.maanden,
-        document_filter=args.document_filter,
-    )
+        if not args.orgaan and not args.alle:
+            print("Geef een orgaan op (--orgaan) of gebruik --alle voor alle organen.")
+            print("Gebruik --lijst-organen om beschikbare organen te bekijken.\n")
+            parser.print_help()
+            if SESSION is not None:
+                await SESSION.close()
+            sys.exit(1)
+
+        await scrape(
+            orgaan=None if args.alle else args.orgaan,
+            output_map=args.output,
+            maanden=args.maanden,
+            document_filter=args.document_filter,
+        )
+        if SESSION is not None:
+            await SESSION.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

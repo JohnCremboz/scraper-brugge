@@ -16,33 +16,61 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document as base_download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
+    print_summary,
     sanitize_filename,
 )
 
 BASE_URL = "https://www.molenbeek.irisnet.be"
 LISTING_PATH_TPL = "/fr/vie-politique/conseil/seance-du-conseil-communal-en-{jaar}"
 
-SESSION = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
 
-def init_session(base_url: str = BASE_URL) -> None:
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session(base_url: str = BASE_URL) -> None:
     global SESSION, _config, BASE_URL
+    if SESSION is not None:
+        await SESSION.close()
     BASE_URL = base_url.rstrip("/")
     _config = ScraperConfig(base_url=BASE_URL, rate_limit_delay=0.5, timeout=60)
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
+
+
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=_config.timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 def _parse_datum(tekst: str) -> date | None:
@@ -56,12 +84,12 @@ def _parse_datum(tekst: str) -> date | None:
         return None
 
 
-def haal_documenten_voor_jaar(jaar: int, grensdatum: date, doc_filter: str | None) -> list[dict]:
+async def haal_documenten_voor_jaar(jaar: int, grensdatum: date, doc_filter: str | None) -> list[dict]:
     """Haal documenten op voor een gegeven jaar."""
-    assert SESSION is not None
-
     url = f"{BASE_URL}{LISTING_PATH_TPL.format(jaar=jaar)}"
-    r = SESSION.get(url, timeout=60)
+    r = await _get(url)
+    if not r:
+        return []
     if r.status_code == 404:
         return []
     if r.status_code != 200:
@@ -77,7 +105,6 @@ def haal_documenten_voor_jaar(jaar: int, grensdatum: date, doc_filter: str | Non
         if not cells:
             continue
 
-        # Eerste cel bevat datum
         d = _parse_datum(cells[0].get_text(strip=True))
         if d is None:
             continue
@@ -105,30 +132,17 @@ def haal_documenten_voor_jaar(jaar: int, grensdatum: date, doc_filter: str | Non
     return documenten
 
 
-def haal_documenten(grensdatum: date, doc_filter: str | None) -> list[dict]:
+async def haal_documenten(grensdatum: date, doc_filter: str | None) -> list[dict]:
     huidig_jaar = date.today().year
     grens_jaar = grensdatum.year
     alle: list[dict] = []
 
     for jaar in range(huidig_jaar, grens_jaar - 1, -1):
-        docs = haal_documenten_voor_jaar(jaar, grensdatum, doc_filter)
+        docs = await haal_documenten_voor_jaar(jaar, grensdatum, doc_filter)
         alle.extend(docs)
 
     alle.sort(key=lambda d: d["datum"], reverse=True)
     return alle
-
-
-def download_document(doc_url: str, output_dir: Path, filename_hint: str) -> bool:
-    assert SESSION is not None and _config is not None
-    result = base_download_document(
-        session=SESSION,
-        config=_config,
-        doc_url=doc_url,
-        output_dir=output_dir,
-        filename_hint=filename_hint,
-        require_pdf=True,
-    )
-    return result.success
 
 
 def main() -> None:
@@ -153,30 +167,34 @@ def main() -> None:
         print("Geef --alle op (of --orgaan voor compatibiliteit).")
         sys.exit(1)
 
-    init_session(args.base_url)
     maanden = max(1, args.maanden)
     grensdatum = date.today() - timedelta(days=maanden * 31)
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[Molenbeek-Saint-Jean] documenten ophalen (laatste {maanden} maanden)...")
-    docs = haal_documenten(grensdatum, args.document_filter)
-    if not docs:
-        print("  (geen documenten gevonden)")
-        return
+    async def _run() -> None:
+        await init_session(args.base_url)
+        print(f"[Molenbeek-Saint-Jean] documenten ophalen (laatste {maanden} maanden)...")
+        docs = await haal_documenten(grensdatum, args.document_filter)
+        if not docs:
+            print("  (geen documenten gevonden)")
+            if SESSION is not None:
+                await SESSION.close()
+            return
 
-    nieuw = 0
-    for idx, doc in enumerate(docs, 1):
-        hint = sanitize_filename(doc["naam"] or Path(doc["url"]).name)
-        print(f"  ({idx}/{len(docs)}) {hint[:60]}...", end="", flush=True)
-        if download_document(doc["url"], output_dir, hint):
-            nieuw += 1
-            print(" [OK]")
-        else:
-            print(" [SKIP]")
+        pdf_docs = [{"url": d["url"], "naam": sanitize_filename(d["naam"] or Path(d["url"]).name)}
+                    for d in docs]
+        resultaten = await async_download_documents_parallel(
+            SESSION, _config, pdf_docs, output_dir, require_pdf=True,
+        )
+        print_summary(resultaten, naam="Molenbeek-Saint-Jean")
+        nieuw = sum(1 for r in resultaten if r.success and not r.skipped)
+        print(f"\nKlaar. {nieuw} document(en) gedownload.")
+        if SESSION is not None:
+            await SESSION.close()
 
-    print(f"\nKlaar. {nieuw} document(en) gedownload.")
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

@@ -16,21 +16,24 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
     print_summary,
-    rate_limited_get,
     sanitize_filename,
 )
 
@@ -165,8 +168,6 @@ GEMEENTEN: dict[str, dict] = {
     "www.gemeentepelt.be": {
         "naam": "Pelt",
         "listing_pad": "/agendanotulen/index/1/gemeenteraad",
-        # Twee URL-vormen in gebruik: oudere met /agendanotulen/detail/<id>/gemeenteraad-...
-        # en recentere directe slug /gemeenteraad-DD-maandnaam-YYYY
         "vergadering_re": re.compile(
             r"^/(?:agendanotulen/detail/\d+/)?gemeenteraad-\d{1,2}-[a-z]+-\d{4}$", re.IGNORECASE
         ),
@@ -181,28 +182,47 @@ GEMEENTEN: dict[str, dict] = {
     },
 }
 
-SESSION = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 BASE_URL = ""
+
+
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
 
 
 # ---------------------------------------------------------------------------
 # Sessie-initialisatie
 # ---------------------------------------------------------------------------
 
-def init_session(base_url: str) -> None:
+async def init_session(base_url: str) -> None:
     global SESSION, _config, BASE_URL
+    if SESSION is not None:
+        await SESSION.close()
     BASE_URL = base_url.rstrip("/")
     _config = ScraperConfig(
         base_url=BASE_URL,
         rate_limit_delay=0.5,
         timeout=30,
     )
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
 
 
-def _get(url: str) -> "requests.Response | None":
-    return rate_limited_get(SESSION, url, _config)
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=_config.timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 def _absolute(pad: str) -> str:
@@ -222,7 +242,6 @@ def _links_van_pagina(html: str, patroon: re.Pattern) -> list[str]:
     resultaat: list[str] = []
     for a in soup.find_all("a", href=True):
         href = a["href"].split("?")[0].split("#")[0].rstrip("/")
-        # Normaliseer naar relatief pad
         parsed = urlparse(href)
         pad = parsed.path if parsed.path else href
         if patroon.search(pad) and pad not in gezien:
@@ -231,7 +250,7 @@ def _links_van_pagina(html: str, patroon: re.Pattern) -> list[str]:
     return resultaat
 
 
-def haal_vergaderingen(
+async def haal_vergaderingen(
     config: dict,
     grensdatum: date,
 ) -> list[tuple[str, date | None]]:
@@ -242,7 +261,7 @@ def haal_vergaderingen(
     de jaarpagina's opgehaald, dan de vergaderingen daarbinnen.
     """
     listing_url = _absolute(config["listing_pad"])
-    resp = _get(listing_url)
+    resp = await _get(listing_url)
     if not resp or resp.status_code != 200:
         logger.warning("Listing niet bereikbaar: %s", listing_url)
         return []
@@ -254,7 +273,6 @@ def haal_vergaderingen(
     if jaar_re:
         # Twee-niveau: listing → jaarpagina's → vergaderingen
         jaar_paden = _links_van_pagina(html, jaar_re)
-        # Filter op relevante jaren (huidig jaar en jaar van grensdatum)
         min_jaar = grensdatum.year
         jaar_paden = [
             p for p in jaar_paden
@@ -262,7 +280,7 @@ def haal_vergaderingen(
         ]
         vergadering_paden: list[str] = []
         for jp in jaar_paden:
-            r = _get(_absolute(jp))
+            r = await _get(_absolute(jp))
             if r and r.status_code == 200:
                 vergadering_paden.extend(_links_van_pagina(r.text, vergadering_re))
     elif config.get("pagina_param"):
@@ -272,7 +290,7 @@ def haal_vergaderingen(
         gezien: set[str] = set()
         for n in range(1, 200):
             pagina_url = listing_url + pagina_param.format(n=n)
-            r = _get(pagina_url)
+            r = await _get(pagina_url)
             if not r or r.status_code != 200:
                 break
             nieuwe = [p for p in _links_van_pagina(r.text, vergadering_re) if p not in gezien]
@@ -296,9 +314,9 @@ def haal_vergaderingen(
 # Downloads ophalen van een vergaderingspagina
 # ---------------------------------------------------------------------------
 
-def haal_downloads(vergadering_url: str) -> list[str]:
+async def haal_downloads(vergadering_url: str) -> list[str]:
     """Haal alle /file/download/-URLs op van een vergaderingspagina."""
-    resp = _get(vergadering_url)
+    resp = await _get(vergadering_url)
     if not resp or resp.status_code != 200:
         logger.warning("Vergadering niet bereikbaar: %s", vergadering_url)
         return []
@@ -338,7 +356,7 @@ def _zoek_gemeente(netloc: str) -> dict | None:
 # Hoofd-scrapefunctie
 # ---------------------------------------------------------------------------
 
-def scrape_gemeente(
+async def scrape_gemeente(
     config: dict,
     output_dir: Path,
     maanden: int = 12,
@@ -349,8 +367,6 @@ def scrape_gemeente(
     Returns:
         (totaal_geprobeerd, totaal_gedownload)
     """
-    from base_scraper import DownloadResult
-
     grensdatum = date.today() - timedelta(days=maanden * 31)
     naam = config["naam"]
     gem_dir = output_dir / sanitize_filename(naam)
@@ -358,39 +374,34 @@ def scrape_gemeente(
 
     logger.info("▶  %s  (grensdatum=%s)", naam, grensdatum)
 
-    vergaderingen = haal_vergaderingen(config, grensdatum)
+    vergaderingen = await haal_vergaderingen(config, grensdatum)
     logger.info("   %d vergadering(en) gevonden", len(vergaderingen))
 
-    alle_resultaten: list[DownloadResult] = []
+    alle_docs: list[dict] = []
 
     for verg_url, verg_datum in vergaderingen:
         datum_str = verg_datum.isoformat() if verg_datum else "onbekend"
         logger.debug("  📅 %s  %s", datum_str, verg_url)
 
-        download_urls = haal_downloads(verg_url)
+        download_urls = await haal_downloads(verg_url)
         if not download_urls:
             logger.debug("     (geen downloads)")
             continue
 
         for doc_url in download_urls:
-            # Optioneel: filter op bestandsnaam-hint
             if document_filter:
                 if document_filter.lower() not in doc_url.lower():
                     continue
-
             hint = sanitize_filename(f"{datum_str}_{Path(doc_url.split('?')[0]).name}")
-            result = download_document(
-                SESSION, _config,
-                doc_url,
-                gem_dir,
-                filename_hint=hint,
-                require_pdf=True,
-            )
-            alle_resultaten.append(result)
+            alle_docs.append({"url": doc_url, "naam": hint})
 
-    gedownload = sum(1 for r in alle_resultaten if r.success and not r.skipped)
-    print_summary(alle_resultaten, naam=naam)
-    return len(alle_resultaten), gedownload
+    resultaten = await async_download_documents_parallel(
+        SESSION, _config, alle_docs, gem_dir, require_pdf=True,
+    )
+
+    gedownload = sum(1 for r in resultaten if r.success and not r.skipped)
+    print_summary(resultaten, naam=naam)
+    return len(resultaten), gedownload
 
 
 # ---------------------------------------------------------------------------
@@ -439,8 +450,8 @@ def main() -> None:
             print(f"  {conf['naam']:25s}  https://{netloc}/")
         return
 
-    # Bepaal welke gemeenten te verwerken
     te_verwerken: list[dict] = []
+    init_base_urls: list[str] = []
 
     if args.base_url:
         netloc = urlparse(args.base_url).netloc
@@ -449,20 +460,21 @@ def main() -> None:
             print(f"[!] Geen configuratie gevonden voor {netloc}")
             sys.exit(1)
         te_verwerken = [conf]
-        init_session(args.base_url)
+        init_base_urls = [args.base_url]
     elif args.gemeente:
         zoek = args.gemeente.lower().replace("-", "").replace(" ", "")
         for netloc, conf in GEMEENTEN.items():
             naam_sleutel = conf["naam"].lower().replace("-", "").replace(" ", "")
             if zoek in naam_sleutel or zoek in netloc:
                 te_verwerken = [conf]
-                init_session(f"https://{netloc}")
+                init_base_urls = [f"https://{netloc}"]
                 break
         if not te_verwerken:
             print(f"[!] Gemeente '{args.gemeente}' niet gevonden. Gebruik --lijst.")
             sys.exit(1)
     elif args.alle:
         te_verwerken = list(GEMEENTEN.values())
+        init_base_urls = [f"https://{k}" for k in GEMEENTEN]
     else:
         parser.print_help()
         sys.exit(1)
@@ -470,25 +482,24 @@ def main() -> None:
     output_root = Path(args.output)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    totaal_geprobeerd = 0
-    totaal_gedownload = 0
+    async def _run() -> None:
+        totaal_geprobeerd = 0
+        totaal_gedownload = 0
+        for conf, base_url in zip(te_verwerken, init_base_urls):
+            await init_session(base_url)
+            gevonden, gedownload = await scrape_gemeente(
+                conf,
+                output_root,
+                maanden=args.maanden,
+                document_filter=args.document_filter,
+            )
+            totaal_geprobeerd += gevonden
+            totaal_gedownload += gedownload
+        if SESSION is not None:
+            await SESSION.close()
+        print(f"\nKlaar. Totaal: {totaal_geprobeerd} geprobeerd, {totaal_gedownload} gedownload.")
 
-    for conf in te_verwerken:
-        # Initialiseer sessie per gemeente als we --alle gebruiken
-        if args.alle and not args.base_url:
-            netloc = next(k for k, v in GEMEENTEN.items() if v is conf)
-            init_session(f"https://{netloc}")
-
-        gevonden, gedownload = scrape_gemeente(
-            conf,
-            output_root,
-            maanden=args.maanden,
-            document_filter=args.document_filter,
-        )
-        totaal_geprobeerd += gevonden
-        totaal_gedownload += gedownload
-
-    print(f"\nKlaar. Totaal: {totaal_geprobeerd} geprobeerd, {totaal_gedownload} gedownload.")
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -24,15 +25,15 @@ from dateutil.relativedelta import relativedelta
 from pathlib import Path
 from urllib.parse import urljoin
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
-from tqdm import tqdm
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document,
-    robust_get,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
+    logger,
     sanitize_filename,
 )
 
@@ -46,12 +47,37 @@ MAANDEN_FR: dict[str, int] = {
     "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12,
 }
 
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
 
-def _get(url: str) -> requests.Response | None:
-    return robust_get(SESSION, url)
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session(base_url: str) -> None:
+    global SESSION, _config
+    if SESSION is not None:
+        await SESSION.close()
+    _config = ScraperConfig(base_url=base_url)
+    SESSION = create_async_session(_config)
+
+
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +129,7 @@ def _parse_datum_du(tekst: str, fallback_jaar: int | None = None) -> date | None
 # Province-specifieke parsers
 # ---------------------------------------------------------------------------
 
-def _haal_hainaut(base_url: str, maanden: int) -> list[dict]:
+async def _haal_hainaut(base_url: str, maanden: int) -> list[dict]:
     """
     Hainaut: 3 subpagina's scrapen (ODJ, projets de délibérations, communiqués).
     Elke pagina: h3-titel met datum -> PDF-link in volgend sibling-blok.
@@ -120,7 +146,7 @@ def _haal_hainaut(base_url: str, maanden: int) -> list[dict]:
     vergaderingen: dict[str, dict] = {}
 
     for pagina_url, doc_type in paginas:
-        resp = _get(pagina_url)
+        resp = await _get(pagina_url)
         if not resp:
             print(f"  [!] Kan pagina niet laden: {pagina_url}")
             continue
@@ -164,7 +190,7 @@ def _haal_hainaut(base_url: str, maanden: int) -> list[dict]:
     return sorted(vergaderingen.values(), key=lambda v: v["datum"], reverse=True)
 
 
-def _haal_luxemburg(base_url: str, maanden: int) -> list[dict]:
+async def _haal_luxemburg(base_url: str, maanden: int) -> list[dict]:
     """
     Luxemburg: 1 pagina, h3-jaar -> ul -> li-items.
     Datum staat in li-tekst: "27 mars - 14h : ...". Meerdere PDFs per li mogelijk.
@@ -172,7 +198,7 @@ def _haal_luxemburg(base_url: str, maanden: int) -> list[dict]:
     pagina_url = (
         f"{base_url}/province-de-luxembourg/publications-legales-institutionnelles/ordre_du_jour"
     )
-    resp = _get(pagina_url)
+    resp = await _get(pagina_url)
     if not resp:
         print("  [!] Kan pagina niet laden")
         return []
@@ -200,7 +226,6 @@ def _haal_luxemburg(base_url: str, maanden: int) -> list[dict]:
 
         for li in ul.find_all("li", recursive=False):
             li_tekst = li.get_text(" ", strip=True)
-            # Verwijder ordinale suffix ("1 er" -> "1")
             li_tekst_norm = re.sub(r"(\d)\s+er\b", r"\1", li_tekst, flags=re.IGNORECASE)
             m = re.match(r"^(\d{1,2})\s+(\w+)", li_tekst_norm.strip())
             if not m:
@@ -249,7 +274,7 @@ def _jaar_uit_url(href: str) -> int | None:
     return None
 
 
-def _haal_brabantwallon(base_url: str, maanden: int) -> list[dict]:
+async def _haal_brabantwallon(base_url: str, maanden: int) -> list[dict]:
     """
     Brabant wallon: 1 pagina met directe PDF-links naar procès-verbaux.
     Datum staat in linktekst; jaar eventueel uit URL-pad als fallback.
@@ -258,7 +283,7 @@ def _haal_brabantwallon(base_url: str, maanden: int) -> list[dict]:
         f"{base_url}/le-brabant-wallon/vie-politique/publications-officielles"
         "/proces-verbaux-du-conseil-provincial"
     )
-    resp = _get(pagina_url)
+    resp = await _get(pagina_url)
     if not resp:
         print("  [!] Kan pagina niet laden")
         return []
@@ -308,9 +333,9 @@ class ProvincieConfig:
     sleutel: str
     naam: str
     base_url: str
-    hostname: str        # voor auto-detectie via --base-url
-    parser: object       # callable (base_url, maanden) -> list[dict]
-    bron_label: str      # korte omschrijving voor HTML footer
+    hostname: str
+    parser: object
+    bron_label: str
 
 
 PROVINCIES: dict[str, ProvincieConfig] = {
@@ -371,9 +396,7 @@ def genereer_html(vergaderingen: list[dict], cfg: ProvincieConfig, output_dir: P
     )
 
 
-def scrape(provincie_sleutel: str, maanden: int = 6, output_base: str = "pdfs") -> None:
-    global SESSION, _config
-
+async def scrape(provincie_sleutel: str, maanden: int = 6, output_base: str = "pdfs") -> None:
     cfg = PROVINCIES.get(provincie_sleutel)
     if not cfg:
         print(f"[!] Onbekende provincie: {provincie_sleutel!r}")
@@ -383,8 +406,7 @@ def scrape(provincie_sleutel: str, maanden: int = 6, output_base: str = "pdfs") 
     output_dir = Path(output_base) / sanitize_filename(cfg.naam)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _config = ScraperConfig(base_url=cfg.base_url, output_dir=output_dir)
-    SESSION = create_session(_config)
+    await init_session(cfg.base_url)
 
     print(f"\n{'=' * 70}")
     print(f"  Naam     : {cfg.naam}")
@@ -393,26 +415,40 @@ def scrape(provincie_sleutel: str, maanden: int = 6, output_base: str = "pdfs") 
     print(f"{'=' * 70}")
 
     print(f"[1] Vergaderingen ophalen (afgelopen {maanden} maanden)...")
-    vergaderingen = cfg.parser(cfg.base_url, maanden)
+    vergaderingen = await cfg.parser(cfg.base_url, maanden)
     print(f"    v {len(vergaderingen)} vergaderingen gevonden")
 
     if not vergaderingen:
         print("  Geen vergaderingen gevonden.")
+        if SESSION is not None:
+            await SESSION.close()
         return
 
-    n_pdfs = sum(len(v["documenten"]) for v in vergaderingen)
-    gedownload = 0
+    pdf_docs = [
+        {
+            "url": doc["url"],
+            "naam": f"{v['datum']}_{sanitize_filename(doc['naam'])}.pdf",
+        }
+        for v in vergaderingen
+        for doc in v["documenten"]
+        if doc["type"] == "pdf"
+    ]
 
-    print(f"[2] PDF's downloaden ({n_pdfs} totaal)...")
-    for v in tqdm(vergaderingen, desc="Downloaden"):
-        for doc in v["documenten"]:
-            result = download_document(
-                SESSION, _config, doc["url"], output_dir,
-                filename_hint=f"{v['datum']}_{sanitize_filename(doc['naam'])}.pdf",
-            )
-            if result and result.success:
-                doc["local_file"] = str(result.path)
-                gedownload += 1
+    gedownload = 0
+    print(f"[2] PDF's downloaden ({len(pdf_docs)} totaal)...")
+    if pdf_docs:
+        resultaten = await async_download_documents_parallel(
+            SESSION, _config, pdf_docs, output_dir, require_pdf=True,
+        )
+        idx = 0
+        for v in vergaderingen:
+            for doc in v["documenten"]:
+                if doc["type"] == "pdf":
+                    r = resultaten[idx]
+                    if r.success:
+                        doc["local_file"] = str(r.path)
+                        gedownload += 1
+                    idx += 1
 
     print("[3] Opslaan...")
     meta_pad = output_dir / f"{sanitize_filename(cfg.naam)}_metadata.json"
@@ -422,11 +458,15 @@ def scrape(provincie_sleutel: str, maanden: int = 6, output_base: str = "pdfs") 
     html_pad = genereer_html(vergaderingen, cfg, output_dir)
     print(f"    v HTML: {html_pad.name}")
 
+    n_total = sum(len(v["documenten"]) for v in vergaderingen)
     print(f"\n{'=' * 70}")
     print(f"  Klaar!")
     print(f"  Vergaderingen : {len(vergaderingen)}")
-    print(f"  Documenten    : {n_pdfs} ({gedownload} PDF's gedownload)")
+    print(f"  Documenten    : {n_total} ({gedownload} PDF's gedownload)")
     print(f"{'=' * 70}\n")
+
+    if SESSION is not None:
+        await SESSION.close()
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +484,6 @@ def main() -> None:
     )
     parser.add_argument("--maanden", type=int, default=6, help="Aantal maanden terug (standaard 6)")
     parser.add_argument("--output", "-d", type=str, default="pdfs", help="Uitvoermap")
-    # Standaard TUI-argumenten; --base-url wordt gebruikt voor auto-detectie provincie
     parser.add_argument("--base-url", type=str, default="", help="Basis-URL (auto-detectie provincie)")
     parser.add_argument("--alle", action="store_true")
     parser.add_argument("--orgaan", type=str)
@@ -453,7 +492,6 @@ def main() -> None:
     parser.add_argument("--document-filter", type=str)
     args = parser.parse_args()
 
-    # Provincie bepalen: expliciete --provincie heeft voorrang op --base-url
     provincie_sleutel: str | None = args.provincie
     if not provincie_sleutel and args.base_url:
         cfg = _detecteer_provincie(args.base_url)
@@ -466,7 +504,7 @@ def main() -> None:
             f"  Kies uit: {', '.join(PROVINCIES)}"
         )
 
-    scrape(provincie_sleutel, maanden=args.maanden, output_base=args.output)
+    asyncio.run(scrape(provincie_sleutel, maanden=args.maanden, output_base=args.output))
 
 
 if __name__ == "__main__":

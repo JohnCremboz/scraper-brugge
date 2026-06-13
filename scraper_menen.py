@@ -10,27 +10,28 @@ Gebruik:
 """
 
 import argparse
+import asyncio
 import logging
 import re
 import sys
-import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
 from dateutil.relativedelta import relativedelta
-from tqdm import tqdm
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    sanitize_filename,
-    safe_output_path,
-    download_document as base_download_document,
+    async_download_document,
+    async_rate_limit,
+    create_async_session,
     DownloadResult,
     logger,
+    sanitize_filename,
+    safe_output_path,
 )
 
 BASE_URL = "https://menen-echo.cipalschaubroeck.be"
@@ -39,30 +40,67 @@ LIJST_URL = f"{BASE_URL}{CONTEXT}/zittingen/lijst"
 KALENDER_API = f"{BASE_URL}{CONTEXT}/calendar/fetchcalendar"
 ZOEKEN_URL = f"{BASE_URL}{CONTEXT}/zoeken"
 
-# Scraper configuratie (wordt ingesteld in main())
 _config: ScraperConfig | None = None
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 
 
-def init_session():
-    """Initialiseer de sessie met rate limiting en retries."""
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session() -> None:
     global SESSION, _config
+    if SESSION is not None:
+        await SESSION.close()
     if _config is None:
         _config = ScraperConfig(base_url=BASE_URL)
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
+    # Initialiseer sessie door lijst-pagina op te halen
+    resp = await _get(LIJST_URL, timeout=15)
+    if not resp:
+        logger.warning("Sessie-initialisatie mislukt: %s", LIJST_URL)
+
+
+async def _get(url: str, timeout: int = 30) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
     try:
-        SESSION.get(LIJST_URL, timeout=15)
-    except Exception as e:
-        logger.warning("Sessie-initialisatie mislukt: %s", e)
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
-def download_document(doc_url: str, bestemming: Path, filename_hint: str = "") -> bool:
-    """Download een /document/{id} URL als PDF via base_scraper."""
+async def _get_json(url: str, params: dict | None = None, timeout: int = 15) -> dict | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, params=params, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as resp:
+            if resp.status != 200:
+                return None
+            return await resp.json(content_type=None)
+    except Exception as exc:
+        logger.warning("GET JSON mislukt %s: %s", url, exc)
+        return None
+
+
+async def download_document_menen(doc_url: str, bestemming: Path, filename_hint: str = "") -> bool:
+    """Download een /document/{id} URL als PDF via async_download_document."""
     if SESSION is None or _config is None:
         logger.error("Sessie niet geïnitialiseerd")
         return False
-    
-    result = base_download_document(
+
+    result = await async_download_document(
         session=SESSION,
         config=_config,
         doc_url=doc_url,
@@ -70,22 +108,22 @@ def download_document(doc_url: str, bestemming: Path, filename_hint: str = "") -
         filename_hint=filename_hint,
         require_pdf=True,
     )
-    
+
     if not result.success and result.error:
         logger.debug("Download fout %s: %s", doc_url, result.error)
-    
+
     return result.success
 
 
-def haal_document_links_van_pagina(url: str) -> list[dict]:
+async def haal_document_links_van_pagina(url: str) -> list[dict]:
     """Haal alle /document/ links op van een pagina."""
     documenten = []
-    try:
-        full_url = urljoin(BASE_URL, url) if not url.startswith("http") else url
-        resp = SESSION.get(full_url, timeout=30)
-        if resp.status_code != 200:
-            return []
+    full_url = urljoin(BASE_URL, url) if not url.startswith("http") else url
+    resp = await _get(full_url, timeout=30)
+    if not resp or resp.status_code != 200:
+        return []
 
+    try:
         soup = BeautifulSoup(resp.text, "lxml")
         for link in soup.find_all("a", href=True):
             href = link["href"]
@@ -98,15 +136,15 @@ def haal_document_links_van_pagina(url: str) -> list[dict]:
     return documenten
 
 
-def haal_agendapunt_urls(vergadering_url: str) -> list[str]:
+async def haal_agendapunt_urls(vergadering_url: str) -> list[str]:
     """Haal alle agendapunt-URLs op van een vergaderingspagina."""
     agendapunten = []
-    try:
-        full_url = urljoin(BASE_URL, vergadering_url) if not vergadering_url.startswith("http") else vergadering_url
-        resp = SESSION.get(full_url, timeout=30)
-        if resp.status_code != 200:
-            return []
+    full_url = urljoin(BASE_URL, vergadering_url) if not vergadering_url.startswith("http") else vergadering_url
+    resp = await _get(full_url, timeout=30)
+    if not resp or resp.status_code != 200:
+        return []
 
+    try:
         soup = BeautifulSoup(resp.text, "lxml")
         for link in soup.find_all("a", href=True):
             href = link["href"]
@@ -120,14 +158,12 @@ def haal_agendapunt_urls(vergadering_url: str) -> list[str]:
     return agendapunten
 
 
-def verwerk_vergadering(meeting: dict, output_pad: Path,
-                        ook_agendapunten: bool = False,
-                        document_filter: str | None = None) -> int:
+async def verwerk_vergadering(meeting: dict, output_pad: Path,
+                              ook_agendapunten: bool = False,
+                              document_filter: str | None = None) -> int:
     """
     Verwerk een vergadering: download alle bijhorende PDFs.
     Geeft het aantal nieuw gedownloade PDFs terug.
-    Als document_filter opgegeven is (bv. 'notulen'), worden alleen
-    documenten waarvan de naam die string bevat gedownload.
     """
     mid = meeting["id"]
     organ = meeting.get("organ", {}).get("name", "Onbekend")
@@ -145,11 +181,9 @@ def verwerk_vergadering(meeting: dict, output_pad: Path,
     downloads = 0
     verwerkt_ids: set[str] = set()
 
-    # Menen gebruikt "zittingsverslag" i.p.v. "notulen" — voeg aliassen toe zodat
-    # het TUI-filter "notulen" ook zittingsverslagen matcht.
     NOTULEN_ALIASSEN = {"notulen", "zittingsverslag", "zittingsnotulen", "verslag"}
 
-    def verwerk_doc(doc: dict, bestemming: Path) -> bool:
+    async def verwerk_doc(doc: dict, bestemming: Path) -> bool:
         doc_id = doc["url"].split("/")[-1]
         if doc_id in verwerkt_ids:
             return False
@@ -161,24 +195,22 @@ def verwerk_vergadering(meeting: dict, output_pad: Path,
                 return False
         verwerkt_ids.add(doc_id)
         naam_hint = sanitize_filename(doc["naam"])
-        succes = download_document(doc["url"], bestemming, naam_hint)
+        succes = await download_document_menen(doc["url"], bestemming, naam_hint)
         if succes:
             print(f"      [OK] {naam_hint[:70]}")
         return succes
 
-    # Documenten van de vergaderingspagina (agenda, besluitenlijst, notulen, ...)
-    doc_links = haal_document_links_van_pagina(verg_url)
+    doc_links = await haal_document_links_van_pagina(verg_url)
     for doc in doc_links:
-        if verwerk_doc(doc, output_pad):
+        if await verwerk_doc(doc, output_pad):
             downloads += 1
 
-    # Optioneel: individuele agendapunten
     if ook_agendapunten:
-        ap_urls = haal_agendapunt_urls(verg_url)
+        ap_urls = await haal_agendapunt_urls(verg_url)
         if ap_urls:
-            for ap_url in tqdm(ap_urls, desc="      Agendapunten", leave=False):
-                for doc in haal_document_links_van_pagina(ap_url):
-                    if verwerk_doc(doc, output_pad):
+            for ap_url in ap_urls:
+                for doc in await haal_document_links_van_pagina(ap_url):
+                    if await verwerk_doc(doc, output_pad):
                         downloads += 1
 
     if downloads == 0:
@@ -187,13 +219,12 @@ def verwerk_vergadering(meeting: dict, output_pad: Path,
     return downloads
 
 
-def haal_organen() -> list[dict]:
-    """
-    Haal de beschikbare organen op uit de zoekpagina.
-    Geeft lijst van {naam, uuid} terug.
-    """
+async def haal_organen() -> list[dict]:
+    """Haal de beschikbare organen op uit de zoekpagina."""
+    resp = await _get(ZOEKEN_URL, timeout=15)
+    if not resp:
+        return []
     try:
-        resp = SESSION.get(ZOEKEN_URL, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
         select = soup.find("select", {"name": "organId"})
         if not select:
@@ -210,24 +241,20 @@ def haal_organen() -> list[dict]:
         return []
 
 
-def zoek_orgaan(orgaan_naam: str) -> tuple[str | None, str | None]:
-    """
-    Zoek UUID van een orgaan op naam (hoofdletterongevoelig, deel-match).
-    Geeft (uuid, exacte_naam) terug of (None, None).
-    """
-    for org in haal_organen():
+async def zoek_orgaan(orgaan_naam: str) -> tuple[str | None, str | None]:
+    """Zoek UUID van een orgaan op naam (hoofdletterongevoelig, deel-match)."""
+    for org in await haal_organen():
         if orgaan_naam.lower() in org["naam"].lower() or org["naam"].lower() in orgaan_naam.lower():
             return org["uuid"], org["naam"]
     return None, None
 
 
-def haal_datum_grenzen() -> tuple[str, str]:
-    """
-    Haal de eerste en laatste vergaderdatum op uit de lijstpagina.
-    Geeft (firstMeetingDate, lastMeetingDate) terug als 'YYYYMM' strings.
-    """
+async def haal_datum_grenzen() -> tuple[str, str]:
+    """Haal de eerste en laatste vergaderdatum op uit de lijstpagina."""
+    resp = await _get(LIJST_URL, timeout=15)
+    if not resp:
+        return "202101", datetime.now().strftime("%Y%m")
     try:
-        resp = SESSION.get(LIJST_URL, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
         for script in soup.find_all("script"):
             text = script.get_text()
@@ -240,26 +267,18 @@ def haal_datum_grenzen() -> tuple[str, str]:
     return "202101", datetime.now().strftime("%Y%m")
 
 
-def haal_vergaderingen_voor_maand(maand: int, jaar: int) -> list[dict]:
-    """
-    Haal alle vergaderingen op voor een gegeven maand/jaar via de calendar API.
-    Geeft lijst van meeting-dicts terug.
-    """
-    try:
-        params = {
-            "month": f"{maand:02d}",
-            "year": str(jaar),
-            "calendarview": "false",
-            "skipmeetings": "false",
-        }
-        resp = SESSION.get(KALENDER_API, params=params, timeout=15)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        return data.get("meetings", [])
-    except Exception as e:
-        print(f"  [!] Fout calendar API {jaar}/{maand:02d}: {e}")
+async def haal_vergaderingen_voor_maand(maand: int, jaar: int) -> list[dict]:
+    """Haal alle vergaderingen op voor een gegeven maand/jaar via de calendar API."""
+    params = {
+        "month": f"{maand:02d}",
+        "year": str(jaar),
+        "calendarview": "false",
+        "skipmeetings": "false",
+    }
+    data = await _get_json(KALENDER_API, params=params, timeout=15)
+    if not data:
         return []
+    return data.get("meetings", [])
 
 
 def maand_range(start_yyyymm: str, einde_yyyymm: str) -> list[tuple[int, int]]:
@@ -280,9 +299,9 @@ def maand_range(start_yyyymm: str, einde_yyyymm: str) -> list[tuple[int, int]]:
     return resultaat
 
 
-def toon_organen():
+async def toon_organen() -> None:
     """Toon alle beschikbare organen."""
-    organen = haal_organen()
+    organen = await haal_organen()
     if not organen:
         print("Geen organen gevonden.")
         return
@@ -298,9 +317,9 @@ def bereken_start_datum(maanden: int) -> str:
     return f"{start.year}{start.month:02d}"
 
 
-def scrape(orgaan: str | None, output_map: str, maanden: int,
-           ook_agendapunten: bool = False,
-           document_filter: str | None = None):
+async def scrape(orgaan: str | None, output_map: str, maanden: int,
+                 ook_agendapunten: bool = False,
+                 document_filter: str | None = None) -> None:
     """Hoofdfunctie voor het scrapen."""
     output_pad = Path(output_map)
     output_pad.mkdir(parents=True, exist_ok=True)
@@ -315,13 +334,13 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
     print(f"{'='*60}\n")
 
     print("[1] Sessie initialiseren...")
-    init_session()
+    await init_session()
 
     orgaan_filter_naam = None
     _geen_filter_sentinels = {"alle organen (geen filter)", "alle organen", "__alle__"}
     if orgaan and orgaan.lower() not in _geen_filter_sentinels:
         print(f"[2] Orgaan valideren: {orgaan}")
-        uuid, exacte_naam = zoek_orgaan(orgaan)
+        uuid, exacte_naam = await zoek_orgaan(orgaan)
         if uuid:
             orgaan_filter_naam = exacte_naam
             print(f"  Orgaan gevonden: {exacte_naam}")
@@ -333,9 +352,8 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
         print("[2] Geen orgaanfilter (alle organen)")
 
     print("[3] Datumgrenzen ophalen...")
-    first_date, last_date = haal_datum_grenzen()
+    first_date, last_date = await haal_datum_grenzen()
     start_datum = bereken_start_datum(maanden)
-    # Beperk tot de beschikbare data
     if start_datum < first_date:
         start_datum = first_date
     if start_datum > last_date:
@@ -351,16 +369,14 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
     vergaderingen_met_docs = 0
 
     for maand, jaar in maand_lijst:
-        meetings = haal_vergaderingen_voor_maand(maand, jaar)
+        meetings = await haal_vergaderingen_voor_maand(maand, jaar)
         if not meetings:
             continue
 
-        # Filter op gepubliceerd
         gepubliceerd = [m for m in meetings if not m.get("notPublished", False)]
         if not gepubliceerd:
             continue
 
-        # Filter op orgaan
         if orgaan_filter_naam:
             gepubliceerd = [
                 m for m in gepubliceerd
@@ -379,7 +395,7 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
 
         for idx, meeting in enumerate(nieuw, 1):
             print(f"    ({idx}/{len(nieuw)}) verwerken...", end="", flush=True)
-            n = verwerk_vergadering(
+            n = await verwerk_vergadering(
                 meeting, output_pad, ook_agendapunten, document_filter
             )
             print(f" -> {n} PDF(s)")
@@ -387,7 +403,7 @@ def scrape(orgaan: str | None, output_map: str, maanden: int,
             if n > 0:
                 vergaderingen_met_docs += 1
 
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
 
     print(f"\n{'='*60}")
     print(f"  Klaar!")
@@ -421,7 +437,7 @@ Voorbeelden:
     parser.add_argument("--agendapunten", "-a", action="store_true",
         help="Ook individuele agendapunt-besluiten meenemen (trager)")
     parser.add_argument("--document-filter", "-f", type=str, default=None,
-        help="Filter documenten op naam (bv. 'notulen'). Alleen docs die deze tekst bevatten worden gedownload.")
+        help="Filter documenten op naam (bv. 'notulen').")
     parser.add_argument("--notulen", action="store_true",
         help="Shorthand voor --document-filter notulen")
     parser.add_argument("--lijst-organen", action="store_true",
@@ -433,7 +449,6 @@ Voorbeelden:
 
     args = parser.parse_args()
 
-    # Configureer URL's
     global BASE_URL, CONTEXT, LIJST_URL, KALENDER_API, ZOEKEN_URL, _config
     if args.base_url:
         BASE_URL = args.base_url.rstrip("/")
@@ -441,34 +456,39 @@ Voorbeelden:
         CONTEXT = args.context.rstrip("/")
     elif args.base_url and "csecho.be" in BASE_URL.lower():
         CONTEXT = ""
-    # Update afgeleide URLs
     LIJST_URL = f"{BASE_URL}{CONTEXT}/zittingen/lijst"
     KALENDER_API = f"{BASE_URL}{CONTEXT}/calendar/fetchcalendar"
     ZOEKEN_URL = f"{BASE_URL}{CONTEXT}/zoeken"
-    # Maak scraper config
     _config = ScraperConfig(base_url=BASE_URL)
 
     if args.notulen and not args.document_filter:
         args.document_filter = "notulen"
 
-    if args.lijst_organen:
-        init_session()
-        toon_organen()
-        return
+    async def _run() -> None:
+        if args.lijst_organen:
+            await init_session()
+            await toon_organen()
+            if SESSION is not None:
+                await SESSION.close()
+            return
 
-    if not args.orgaan and not args.alle:
-        print("Geef een orgaan op (--orgaan) of gebruik --alle voor alle organen.")
-        print("Gebruik --lijst-organen om beschikbare organen te bekijken.\n")
-        parser.print_help()
-        sys.exit(1)
+        if not args.orgaan and not args.alle:
+            print("Geef een orgaan op (--orgaan) of gebruik --alle voor alle organen.")
+            print("Gebruik --lijst-organen om beschikbare organen te bekijken.\n")
+            parser.print_help()
+            sys.exit(1)
 
-    scrape(
-        orgaan=None if args.alle else args.orgaan,
-        output_map=args.output,
-        maanden=args.maanden,
-        ook_agendapunten=args.agendapunten,
-        document_filter=args.document_filter,
-    )
+        await scrape(
+            orgaan=None if args.alle else args.orgaan,
+            output_map=args.output,
+            maanden=args.maanden,
+            ook_agendapunten=args.agendapunten,
+            document_filter=args.document_filter,
+        )
+        if SESSION is not None:
+            await SESSION.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

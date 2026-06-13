@@ -14,29 +14,41 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from base_scraper import (
+    DownloadResult,
     ScraperConfig,
-    create_session,
-    download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
     print_summary,
-    rate_limited_get,
     sanitize_filename,
-    DownloadResult,
 )
 
 BASE_URL = "https://www.ixelles.be"
 LISTING_PAD = "/site/109-Actualite"
 _PDF_RE = re.compile(r"/uploads/conseil/(?:odj|pv)/", re.IGNORECASE)
 _DATUM_RE = re.compile(r"séance du\s+(\d{1,2})/(\d{2})/(\d{4})", re.IGNORECASE)
+
+SESSION: aiohttp.ClientSession | None = None
+_config: ScraperConfig | None = None
+
+
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
 
 
 def _datum_uit_tekst(tekst: str) -> date | None:
@@ -49,7 +61,28 @@ def _datum_uit_tekst(tekst: str) -> date | None:
     return None
 
 
-def scrape(
+def init_session() -> None:
+    global SESSION, _config
+    _config = ScraperConfig(base_url=BASE_URL, rate_limit_delay=0.5, timeout=30)
+    SESSION = create_async_session(_config)
+
+
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=_config.timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
+
+
+async def scrape(
     maanden: int = 12,
     document_filter: str | None = None,
     output_dir: Path = Path("pdfs"),
@@ -63,12 +96,9 @@ def scrape(
     gem_dir = output_dir / "Ixelles"
     gem_dir.mkdir(parents=True, exist_ok=True)
 
-    config = ScraperConfig(base_url=BASE_URL, rate_limit_delay=0.5, timeout=30)
-    session = create_session(config)
-
     listing_url = BASE_URL + LISTING_PAD
     logger.info("▶  Ixelles  (grensdatum=%s)", grensdatum)
-    resp = rate_limited_get(session, listing_url, config)
+    resp = await _get(listing_url)
     if not resp or resp.status_code != 200:
         logger.warning("Listing niet bereikbaar: %s", listing_url)
         return 0, 0
@@ -81,16 +111,13 @@ def scrape(
         href = a["href"]
         if not _PDF_RE.search(href):
             continue
-        # Maak URL absoluut (relatieve paden: ../uploads/...)
         full_url = urljoin(listing_url, href)
         if full_url in gezien:
             continue
         gezien.add(full_url)
 
         naam = a.get_text(strip=True) or Path(href).name
-        # Datum uit linktekst
         tekst = a.get_text(strip=True)
-        # Zoek ook in parent element
         parent_tekst = a.parent.get_text(strip=True) if a.parent else ""
         datum = _datum_uit_tekst(tekst) or _datum_uit_tekst(parent_tekst)
 
@@ -100,21 +127,13 @@ def scrape(
             if (document_filter.lower() not in naam.lower() and
                     document_filter.lower() not in full_url.lower()):
                 continue
-        pdfs.append({"url": full_url, "naam": naam})
+        pdfs.append({"url": full_url, "naam": sanitize_filename(Path(full_url).name)})
 
     logger.info("   %d PDF(s) gevonden", len(pdfs))
 
-    resultaten: list[DownloadResult] = []
-    for pdf in pdfs:
-        hint = sanitize_filename(Path(pdf["url"]).name)
-        result = download_document(
-            session, config,
-            pdf["url"],
-            gem_dir,
-            filename_hint=hint or pdf["naam"],
-            require_pdf=True,
-        )
-        resultaten.append(result)
+    resultaten: list[DownloadResult] = await async_download_documents_parallel(
+        SESSION, _config, pdfs, gem_dir, require_pdf=True,
+    )
 
     gedownload = sum(1 for r in resultaten if r.success and not r.skipped)
     print_summary(resultaten, naam="Ixelles")
@@ -162,12 +181,17 @@ def main() -> None:
     output_root = Path(args.output)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    geprobeerd, gedownload = scrape(
-        maanden=args.maanden,
-        document_filter=args.document_filter,
-        output_dir=output_root,
-    )
-    print(f"\nKlaar. Totaal: {geprobeerd} geprobeerd, {gedownload} gedownload.")
+    init_session()
+
+    async def _run() -> None:
+        geprobeerd, gedownload = await scrape(
+            maanden=args.maanden,
+            document_filter=args.document_filter,
+            output_dir=output_root,
+        )
+        print(f"\nKlaar. Totaal: {geprobeerd} geprobeerd, {gedownload} gedownload.")
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

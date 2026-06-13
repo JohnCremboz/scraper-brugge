@@ -13,23 +13,26 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from pathlib import Path
 from urllib.parse import urljoin
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document,
-    robust_get,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
+    logger,
     sanitize_filename,
 )
 
@@ -37,28 +40,52 @@ BASE_URL = "https://www.provincieantwerpen.be"
 PAGINA_URL = f"{BASE_URL}/nl/politiek-bestuur/provincieraad/agenda-en-verslagen"
 NAAM = "Provincie Antwerpen"
 
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
 
-def _get(url: str) -> requests.Response | None:
-    return robust_get(SESSION, url)
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session() -> None:
+    global SESSION, _config
+    if SESSION is not None:
+        await SESSION.close()
+    _config = ScraperConfig(base_url=BASE_URL)
+    SESSION = create_async_session(_config)
+
+
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
 # Vergaderingen + documenten ophalen
 # ---------------------------------------------------------------------------
 
-def haal_vergaderingen(maanden: int = 6) -> list[dict]:
+async def haal_vergaderingen(maanden: int = 6) -> list[dict]:
     """Parse de agenda-en-verslagen pagina en extraheer vergaderingen met docs."""
-    resp = _get(PAGINA_URL)
+    resp = await _get(PAGINA_URL)
     if not resp:
         print("  [!] Kan pagina niet laden")
         return []
 
     soup = BeautifulSoup(resp.text, "lxml")
 
-    # Alle links naar open-data provincieraad bestanden
     alle_links = soup.find_all("a", href=True)
     doc_links = [
         (a.get_text(strip=True).replace("arrow_forward", "").strip(), a["href"])
@@ -66,7 +93,6 @@ def haal_vergaderingen(maanden: int = 6) -> list[dict]:
         if "/open-data/provincieraad/" in a["href"]
     ]
 
-    # Groepeer per datum
     cutoff = date.today() - relativedelta(months=maanden)
     vergaderingen: dict[str, dict] = {}
 
@@ -122,13 +148,11 @@ def genereer_html(vergaderingen: list[dict], output_dir: Path) -> Path:
 # Hoofd scrape-functie
 # ---------------------------------------------------------------------------
 
-def scrape(maanden: int = 6, output_base: str = "pdfs") -> None:
-    global SESSION, _config
+async def scrape(maanden: int = 6, output_base: str = "pdfs") -> None:
     output_dir = Path(output_base) / sanitize_filename(NAAM)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _config = ScraperConfig(base_url=BASE_URL, output_dir=output_dir)
-    SESSION = create_session(_config)
+    await init_session()
 
     print(f"\n{'=' * 70}")
     print(f"  Naam     : {NAAM}")
@@ -137,30 +161,39 @@ def scrape(maanden: int = 6, output_base: str = "pdfs") -> None:
     print(f"{'=' * 70}")
 
     print(f"[1] Vergaderingen ophalen (afgelopen {maanden} maanden)...")
-    vergaderingen = haal_vergaderingen(maanden)
+    vergaderingen = await haal_vergaderingen(maanden)
     print(f"    ✓ {len(vergaderingen)} vergaderingen gevonden")
 
     if not vergaderingen:
         print("  Geen vergaderingen gevonden.")
         return
 
-    # Download alleen PDF's (stenografische notulen), HTML-verslagen linken we
-    n_pdfs = sum(1 for v in vergaderingen for d in v["documenten"] if d["type"] == "pdf")
-    gedownload = 0
+    pdf_docs = [
+        {
+            "url": doc["url"],
+            "naam": f"{v['datum']}_{sanitize_filename(doc['naam'])}.pdf",
+        }
+        for v in vergaderingen
+        for doc in v["documenten"]
+        if doc["type"] == "pdf"
+    ]
 
-    if n_pdfs > 0:
-        print(f"[2] PDF-notulen downloaden ({n_pdfs} totaal)...")
-        for v in tqdm(vergaderingen, desc="Downloaden"):
+    gedownload = 0
+    if pdf_docs:
+        print(f"[2] PDF-notulen downloaden ({len(pdf_docs)} totaal)...")
+        resultaten = await async_download_documents_parallel(
+            SESSION, _config, pdf_docs, output_dir, require_pdf=True,
+        )
+        # Koppel local_file terug aan vergaderingen
+        idx = 0
+        for v in vergaderingen:
             for doc in v["documenten"]:
-                if doc["type"] != "pdf":
-                    continue
-                result = download_document(
-                    SESSION, _config, doc["url"], output_dir,
-                    filename_hint=f"{v['datum']}_{sanitize_filename(doc['naam'])}.pdf",
-                )
-                if result and result.success:
-                    doc["local_file"] = str(result.path)
-                    gedownload += 1
+                if doc["type"] == "pdf":
+                    r = resultaten[idx]
+                    if r.success:
+                        doc["local_file"] = str(r.path)
+                        gedownload += 1
+                    idx += 1
     else:
         print("[2] Geen PDF-notulen beschikbaar.")
 
@@ -180,6 +213,9 @@ def scrape(maanden: int = 6, output_base: str = "pdfs") -> None:
     print(f"  Documenten       : {n_total} ({gedownload} PDF's gedownload)")
     print(f"{'=' * 70}\n")
 
+    if SESSION is not None:
+        await SESSION.close()
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -189,7 +225,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Scraper voor Provincie Antwerpen (provincieraad)")
     parser.add_argument("--maanden", type=int, default=6, help="Aantal maanden terug (standaard 6)")
     parser.add_argument("--output", "-d", type=str, default="pdfs", help="Uitvoermap")
-    # Standaard TUI-argumenten
     parser.add_argument("--base-url", type=str, default="")
     parser.add_argument("--alle", action="store_true")
     parser.add_argument("--orgaan", type=str)
@@ -197,7 +232,7 @@ def main() -> None:
     parser.add_argument("--zichtbaar", action="store_true")
     parser.add_argument("--document-filter", type=str)
     args = parser.parse_args()
-    scrape(maanden=args.maanden, output_base=args.output)
+    asyncio.run(scrape(maanden=args.maanden, output_base=args.output))
 
 
 if __name__ == "__main__":

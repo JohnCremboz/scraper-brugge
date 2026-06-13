@@ -24,21 +24,24 @@ Documenten worden gevonden via open_document("id","lgn","le_nom","ext") JS-calls
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
     print_summary,
-    rate_limited_get,
     sanitize_filename,
 )
 
@@ -55,7 +58,7 @@ GEMEENTEN: dict[str, dict] = {
     },
 }
 
-SESSION = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 BASE_URL = ""
 
@@ -64,23 +67,42 @@ _OPEN_DOC_RE = re.compile(
 )
 
 
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
 # ---------------------------------------------------------------------------
 # Sessie-initialisatie
 # ---------------------------------------------------------------------------
 
-def init_session(base_url: str) -> None:
+async def init_session(base_url: str) -> None:
     global SESSION, _config, BASE_URL
+    if SESSION is not None:
+        await SESSION.close()
     BASE_URL = base_url.rstrip("/")
     _config = ScraperConfig(
         base_url=BASE_URL,
         rate_limit_delay=0.5,
         timeout=30,
     )
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
 
 
-def _get(url: str):
-    return rate_limited_get(SESSION, url, _config)
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=_config.timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 def _absolute(pad: str) -> str:
@@ -93,7 +115,7 @@ def _absolute(pad: str) -> str:
 # Vergaderingen & documenten ophalen
 # ---------------------------------------------------------------------------
 
-def haal_vergaderingen(config: dict, grensdatum: date) -> list[tuple[str, date | None]]:
+async def haal_vergaderingen(config: dict, grensdatum: date) -> list[tuple[str, date | None]]:
     """
     Navigeer root → jaar-folders → vergadering-folders.
 
@@ -104,7 +126,7 @@ def haal_vergaderingen(config: dict, grensdatum: date) -> list[tuple[str, date |
     base_php = config["docodis_base"]
     root_url = _absolute(f"{base_php}?id={root_id}&lgn=1")
 
-    resp = _get(root_url)
+    resp = await _get(root_url)
     if not resp or resp.status_code != 200:
         logger.warning("Rootfolder niet bereikbaar: %s", root_url)
         return []
@@ -128,7 +150,7 @@ def haal_vergaderingen(config: dict, grensdatum: date) -> list[tuple[str, date |
 
     for jaar_folder_id, _ in jaar_links:
         jaar_url = _absolute(f"{base_php}?id={jaar_folder_id}&p={root_id}&lgn=1")
-        resp2 = _get(jaar_url)
+        resp2 = await _get(jaar_url)
         if not resp2 or resp2.status_code != 200:
             continue
 
@@ -160,14 +182,14 @@ def _datum_uit_tekst(tekst: str) -> date | None:
     return None
 
 
-def haal_downloads(vergadering_url: str, config: dict) -> list[tuple[str, str]]:
+async def haal_downloads(vergadering_url: str, config: dict) -> list[tuple[str, str]]:
     """
     Haal alle downloadbare documenten van een vergaderingsfolder.
 
     Returns:
         lijst van (url, naam) tuples
     """
-    resp = _get(vergadering_url)
+    resp = await _get(vergadering_url)
     if not resp or resp.status_code != 200:
         logger.warning("Vergadering niet bereikbaar: %s", vergadering_url)
         return []
@@ -204,7 +226,7 @@ def _zoek_gemeente(netloc: str) -> dict | None:
 # Hoofd-scrapefunctie
 # ---------------------------------------------------------------------------
 
-def scrape_gemeente(
+async def scrape_gemeente(
     config: dict,
     output_dir: Path,
     maanden: int = 12,
@@ -215,8 +237,6 @@ def scrape_gemeente(
     Returns:
         (totaal_geprobeerd, totaal_gedownload)
     """
-    from base_scraper import DownloadResult
-
     grensdatum = date.today() - timedelta(days=maanden * 31)
     naam = config["naam"]
     gem_dir = output_dir / sanitize_filename(naam)
@@ -224,16 +244,16 @@ def scrape_gemeente(
 
     logger.info("▶  %s  (grensdatum=%s)", naam, grensdatum)
 
-    vergaderingen = haal_vergaderingen(config, grensdatum)
+    vergaderingen = await haal_vergaderingen(config, grensdatum)
     logger.info("   %d vergadering(en) gevonden", len(vergaderingen))
 
-    alle_resultaten: list[DownloadResult] = []
+    alle_docs: list[dict] = []
 
     for verg_url, verg_datum in vergaderingen:
         datum_str = verg_datum.isoformat() if verg_datum else "onbekend"
         logger.debug("  📅 %s  %s", datum_str, verg_url)
 
-        downloads = haal_downloads(verg_url, config)
+        downloads = await haal_downloads(verg_url, config)
         if not downloads:
             logger.debug("     (geen downloads)")
             continue
@@ -241,20 +261,16 @@ def scrape_gemeente(
         for doc_url, doc_naam in downloads:
             if document_filter and document_filter.lower() not in doc_naam.lower():
                 continue
-
             hint = sanitize_filename(f"{datum_str}_{doc_naam}")
-            result = download_document(
-                SESSION, _config,
-                doc_url,
-                gem_dir,
-                filename_hint=hint,
-                require_pdf=True,
-            )
-            alle_resultaten.append(result)
+            alle_docs.append({"url": doc_url, "naam": hint})
 
-    gedownload = sum(1 for r in alle_resultaten if r.success and not r.skipped)
-    print_summary(alle_resultaten, naam=naam)
-    return len(alle_resultaten), gedownload
+    resultaten = await async_download_documents_parallel(
+        SESSION, _config, alle_docs, gem_dir, require_pdf=True,
+    )
+
+    gedownload = sum(1 for r in resultaten if r.success and not r.skipped)
+    print_summary(resultaten, naam=naam)
+    return len(resultaten), gedownload
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +318,7 @@ def main() -> None:
         return
 
     te_verwerken: list[dict] = []
+    init_base_urls: list[str] = []
 
     if args.base_url:
         netloc = urlparse(args.base_url).netloc
@@ -310,20 +327,21 @@ def main() -> None:
             print(f"[!] Geen configuratie gevonden voor {netloc}")
             sys.exit(1)
         te_verwerken = [conf]
-        init_session(args.base_url)
+        init_base_urls = [args.base_url]
     elif args.gemeente:
         zoek = args.gemeente.lower().replace("-", "").replace(" ", "")
         for netloc, conf in GEMEENTEN.items():
             naam_sleutel = conf["naam"].lower().replace("-", "").replace(" ", "")
             if zoek in naam_sleutel or zoek in netloc:
                 te_verwerken = [conf]
-                init_session(f"https://{netloc}")
+                init_base_urls = [f"https://{netloc}"]
                 break
         if not te_verwerken:
             print(f"[!] Gemeente '{args.gemeente}' niet gevonden. Gebruik --lijst.")
             sys.exit(1)
     elif args.alle:
         te_verwerken = list(GEMEENTEN.values())
+        init_base_urls = [f"https://{k}" for k in GEMEENTEN]
     else:
         parser.print_help()
         return
@@ -331,22 +349,24 @@ def main() -> None:
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    totaal_geprobeerd = totaal_gedownload = 0
-    for conf in te_verwerken:
-        if args.alle:
-            netloc = next(k for k, v in GEMEENTEN.items() if v is conf)
-            init_session(f"https://{netloc}")
-        geprobeerd, gedownload = scrape_gemeente(
-            conf, output_dir,
-            maanden=args.maanden,
-            document_filter=args.document_filter,
-        )
-        totaal_geprobeerd += geprobeerd
-        totaal_gedownload += gedownload
+    async def _run() -> None:
+        totaal_geprobeerd = totaal_gedownload = 0
+        for conf, base_url in zip(te_verwerken, init_base_urls):
+            await init_session(base_url)
+            geprobeerd, gedownload = await scrape_gemeente(
+                conf, output_dir,
+                maanden=args.maanden,
+                document_filter=args.document_filter,
+            )
+            totaal_geprobeerd += geprobeerd
+            totaal_gedownload += gedownload
+        if SESSION is not None:
+            await SESSION.close()
+        if len(te_verwerken) > 1:
+            print(f"\nKlaar. Totaal: {totaal_geprobeerd} geprobeerd, "
+                  f"{totaal_gedownload} gedownload.")
 
-    if len(te_verwerken) > 1:
-        print(f"\nKlaar. Totaal: {totaal_geprobeerd} geprobeerd, "
-              f"{totaal_gedownload} gedownload.")
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

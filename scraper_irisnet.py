@@ -17,59 +17,66 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator
+from typing import AsyncIterator
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
     print_summary,
-    rate_limited_get,
     sanitize_filename,
 )
 
 BASE_URL = "https://publi.irisnet.be"
 CSV_PATH = Path(__file__).parent / "simba-source.csv"
 
-SESSION = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 ORG_KEY: str | None = None  # org_key voor de huidige gemeente (gezet via GEMEENTE_URL)
+
+
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
 
 
 # ---------------------------------------------------------------------------
 # Sessie-initialisatie
 # ---------------------------------------------------------------------------
 
-def init_session(base_url: str = BASE_URL) -> None:
+async def init_session(base_url: str = BASE_URL) -> None:
     global SESSION, _config, BASE_URL
+    if SESSION is not None:
+        await SESSION.close()
     BASE_URL = base_url.rstrip("/")
     _config = ScraperConfig(
         base_url=BASE_URL,
         rate_limit_delay=0.3,
         timeout=60,
     )
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
 
 
-def haal_organen_statisch() -> list[dict]:
-    """Haal mappen (= organen) op voor de huidige gemeente via ORG_KEY.
-
-    ORG_KEY wordt gezet door start.py via de volledige gemeente-URL
-    (die de vipKey as query-parameter bevat).
-    """
+async def haal_organen_statisch() -> list[dict]:
+    """Haal mappen (= organen) op voor de huidige gemeente via ORG_KEY."""
     if not ORG_KEY:
         return []
     if SESSION is None:
-        init_session()
-    mappen = haal_mappen(ORG_KEY)
+        await init_session()
+    mappen = await haal_mappen(ORG_KEY)
     return [{"naam": m["naam"], "uuid": m["key"]} for m in mappen]
 
 
@@ -77,23 +84,37 @@ def haal_organen_statisch() -> list[dict]:
 # HTTP-hulpfunctie
 # ---------------------------------------------------------------------------
 
-def _get(url: str, params: dict | None = None, ajax: bool = True):
+async def _get(url: str, params: dict | None = None, ajax: bool = True) -> _Resp | None:
     """Rate-limited GET, optioneel met AJAX Accept-header."""
+    if SESSION is None or _config is None:
+        return None
     headers = {"Accept": "text/html;type=ajax"} if ajax else {}
-    return rate_limited_get(SESSION, url, _config, params=params, headers=headers)
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=_config.timeout),
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET fout %s: %s", url, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
 # Organisatielijst ophalen
 # ---------------------------------------------------------------------------
 
-def haal_org_keys() -> dict[str, str]:
+async def haal_org_keys() -> dict[str, str]:
     """Haal alle organisaties op van de publi.irisnet.be/web/organizations pagina.
 
     Returns:
         Dict met organisatienaam → vipKey (zonder 'O'-prefix).
     """
-    r = _get(f"{BASE_URL}/web/organizations", ajax=False)
+    r = await _get(f"{BASE_URL}/web/organizations", ajax=False)
     if not r or r.status_code != 200:
         logger.warning("Kon organisatielijst niet ophalen van %s/web/organizations", BASE_URL)
         return {}
@@ -147,13 +168,13 @@ def haal_gemeenten_van_csv() -> list[dict]:
 # Mappen en items ophalen
 # ---------------------------------------------------------------------------
 
-def haal_mappen(org_key: str) -> list[dict]:
+async def haal_mappen(org_key: str) -> list[dict]:
     """Haal top-level mappen op voor een organisatie.
 
     Returns:
         Lijst van dicts met 'key' en 'naam'.
     """
-    r = _get(f"{BASE_URL}/web/categoryContent", params={"vipKey": org_key})
+    r = await _get(f"{BASE_URL}/web/categoryContent", params={"vipKey": org_key})
     if not r or r.status_code != 200:
         logger.warning("Kon mappen niet ophalen voor org_key=%s (HTTP %s)",
                        org_key, getattr(r, "status_code", "?"))
@@ -173,21 +194,19 @@ def haal_mappen(org_key: str) -> list[dict]:
     return mappen
 
 
-def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
+async def haal_datum_items(folder_key: str, grensdatum: date) -> list[dict]:
     """Haal datum-items op in een map die op of na grensdatum vallen.
 
     Verwerkt zowel platte structuren (tekst = ISO-datum) als geneste structuren
     met een tussenliggend jaar-niveau (bijv. Jette: map → jaarmap → sessie).
-
-    Yields:
-        Dicts met 'key', 'datum' (date-object) en optioneel 'label'.
     """
-    r = _get(f"{BASE_URL}/web/categoryComplete", params={"vipKey": folder_key})
+    r = await _get(f"{BASE_URL}/web/categoryComplete", params={"vipKey": folder_key})
     if not r or r.status_code != 200:
-        return
+        return []
 
     soup = BeautifulSoup(r.text, "html.parser")
     gezien: set[str] = set()
+    resultaat: list[dict] = []
 
     for el in soup.find_all(True):
         bk = el.get("data-bk")
@@ -200,14 +219,14 @@ def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
         if re.fullmatch(r"\d{4}", tekst):
             jaar = int(tekst)
             if jaar >= grensdatum.year:
-                yield from haal_datum_items(bk, grensdatum)
+                resultaat.extend(await haal_datum_items(bk, grensdatum))
             continue
 
         # ── Directe ISO-datum (bijv. "2025-01-29") ─────────────────────────
         try:
             item_datum = date.fromisoformat(tekst)
             if item_datum >= grensdatum:
-                yield {"key": bk, "datum": item_datum, "label": tekst}
+                resultaat.append({"key": bk, "datum": item_datum, "label": tekst})
             continue
         except ValueError:
             pass
@@ -218,7 +237,7 @@ def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
             try:
                 item_datum = date.fromisoformat(m.group(1))
                 if item_datum >= grensdatum:
-                    yield {"key": bk, "datum": item_datum, "label": tekst}
+                    resultaat.append({"key": bk, "datum": item_datum, "label": tekst})
                 continue
             except ValueError:
                 pass
@@ -229,18 +248,20 @@ def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
             try:
                 item_datum = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
                 if item_datum >= grensdatum:
-                    yield {"key": bk, "datum": item_datum, "label": tekst}
+                    resultaat.append({"key": bk, "datum": item_datum, "label": tekst})
             except ValueError:
                 pass
 
+    return resultaat
 
-def haal_publicaties(item_key: str) -> list[dict]:
+
+async def haal_publicaties(item_key: str) -> list[dict]:
     """Haal publicaties op voor een datum-item.
 
     Returns:
         Lijst van dicts met 'pub_key', 'titel', 'datum', 'url'.
     """
-    r = _get(f"{BASE_URL}/web/categoryComplete", params={"vipKey": item_key})
+    r = await _get(f"{BASE_URL}/web/categoryComplete", params={"vipKey": item_key})
     if not r or r.status_code != 200:
         return []
 
@@ -298,7 +319,7 @@ def _genereer_html(gemeente: str, docs: list[dict], output_dir: Path) -> None:
 # Hoofd-scrapefunctie
 # ---------------------------------------------------------------------------
 
-def scrape_gemeente(
+async def scrape_gemeente(
     gemeente: str,
     org_key: str,
     output_dir: Path,
@@ -308,26 +329,15 @@ def scrape_gemeente(
 ) -> tuple[int, int]:
     """Scrape alle publicaties voor één gemeente.
 
-    Args:
-        gemeente:    Naam van de gemeente.
-        org_key:     VipKey van de organisatie op publi.irisnet.be.
-        output_dir:  Basismap voor downloads.
-        maanden:     Terugkijkperiode in maanden.
-        map_filter:  Optioneel: filter op mapnaam (substring, niet hoofdlettergevoelig).
-        doc_filter:  Optioneel: filter op documenttitel/bestandsnaam (substring).
-
     Returns:
         (totaal_geprobeerd, totaal_gedownload)
     """
-    from base_scraper import DownloadResult
-
     grensdatum = (datetime.today() - timedelta(days=30 * maanden)).date()
     gem_dir = output_dir / sanitize_filename(gemeente)
     gem_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("▶  %s  (vipKey=%s, grensdatum=%s)", gemeente, org_key, grensdatum)
 
-    # NL→FR vertaling voor veelgebruikte orgaannamen (publi.irisnet.be is Franstalig)
     _NL_NAAR_FR: dict[str, str] = {
         "gemeenteraad": "conseil communal",
         "college van burgemeester en schepenen": "collège des bourgmestre",
@@ -336,7 +346,7 @@ def scrape_gemeente(
         "raad voor maatschappelijk welzijn": "cpas",
     }
 
-    mappen = haal_mappen(org_key)
+    mappen = await haal_mappen(org_key)
     if not mappen:
         logger.warning("Geen mappen gevonden voor %s", gemeente)
         return 0, 0
@@ -348,46 +358,47 @@ def scrape_gemeente(
         logger.info("  Filter '%s' -> %d map(pen) over", map_filter, len(mappen))
 
     alle_docs: list[dict] = []
-    results: list[DownloadResult] = []
+    download_docs: list[dict] = []
 
     for map_item in mappen:
         map_naam = map_item["naam"]
         logger.info("  📁 %s", map_naam)
-        for item in haal_datum_items(map_item["key"], grensdatum):
+        items = await haal_datum_items(map_item["key"], grensdatum)
+        for item in items:
             datum_str = item["datum"].isoformat()
-            publicaties = haal_publicaties(item["key"])
+            publicaties = await haal_publicaties(item["key"])
             if not publicaties:
                 continue
 
             for pub in publicaties:
-                # Sla over als documenttitel niet overeenkomt met doc_filter
                 if doc_filter and doc_filter.lower() not in (pub.get("titel") or "").lower():
                     continue
                 hint = sanitize_filename(
                     f"{datum_str}_{pub['titel']}" if pub["titel"] else datum_str
                 )
-                result = download_document(
-                    SESSION, _config,
-                    pub["url"],
-                    gem_dir,
-                    filename_hint=hint,
-                    require_pdf=False,
-                )
-                results.append(result)
+                download_docs.append({"url": pub["url"], "naam": hint})
                 alle_docs.append({
                     **pub,
                     "map": map_naam,
                     "datum_item": datum_str,
-                    "local_path": str(result.path) if result.path else None,
+                    "local_path": None,
                 })
 
-    gedownload = sum(1 for r in results if r.success and not r.skipped)
+    resultaten = await async_download_documents_parallel(
+        SESSION, _config, download_docs, gem_dir, require_pdf=False,
+    )
+
+    # Update local_path in alle_docs
+    for doc, result in zip(alle_docs, resultaten):
+        doc["local_path"] = str(result.path) if result.path else None
+
+    gedownload = sum(1 for r in resultaten if r.success and not r.skipped)
 
     if alle_docs:
         _genereer_html(gemeente, alle_docs, gem_dir)
 
-    print_summary(results, naam=gemeente)
-    return len(results), gedownload
+    print_summary(resultaten, naam=gemeente)
+    return len(resultaten), gedownload
 
 
 # ---------------------------------------------------------------------------
@@ -416,66 +427,77 @@ def main() -> None:
         from base_scraper import set_log_level
         set_log_level("DEBUG")
 
-    init_session(args.base_url)
+    async def _run() -> None:
+        await init_session(args.base_url)
 
-    logger.info("Ophalen organisatielijst van %s...", BASE_URL)
-    platform_keys = haal_org_keys()
-    csv_gemeenten = haal_gemeenten_van_csv()
+        logger.info("Ophalen organisatielijst van %s...", BASE_URL)
+        platform_keys = await haal_org_keys()
+        csv_gemeenten = haal_gemeenten_van_csv()
 
-    # Vul ontbrekende org_keys aan via naamsovereenkomst met platform
-    for g in csv_gemeenten:
-        if not g["org_key"]:
-            match = next(
-                (platform_keys[k] for k in platform_keys if k.lower() == g["gemeente"].lower()),
-                None,
-            )
-            g["org_key"] = match
-
-    if args.lijst:
-        print("\nGemeenten in simba-source.csv (irisnet-type):")
+        # Vul ontbrekende org_keys aan via naamsovereenkomst met platform
         for g in csv_gemeenten:
-            status = "✅" if g["org_key"] else "❌ niet op platform"
-            print(f"  {status}  {g['gemeente']}")
-        print("\nAlle communes op publi.irisnet.be:")
-        for naam in sorted(platform_keys):
-            print(f"  {naam}  ->  {platform_keys[naam]}")
-        sys.exit(0)
+            if not g["org_key"]:
+                match = next(
+                    (platform_keys[k] for k in platform_keys if k.lower() == g["gemeente"].lower()),
+                    None,
+                )
+                g["org_key"] = match
 
-    if args.gemeente:
-        zoek = args.gemeente.lower()
-        te_verwerken = [g for g in csv_gemeenten if zoek in g["gemeente"].lower()]
-        if not te_verwerken:
-            print(f"Geen gemeente gevonden met '{args.gemeente}' in simba-source.csv.")
+        if args.lijst:
+            print("\nGemeenten in simba-source.csv (irisnet-type):")
+            for g in csv_gemeenten:
+                status = "✅" if g["org_key"] else "❌ niet op platform"
+                print(f"  {status}  {g['gemeente']}")
+            print("\nAlle communes op publi.irisnet.be:")
+            for naam in sorted(platform_keys):
+                print(f"  {naam}  ->  {platform_keys[naam]}")
+            if SESSION is not None:
+                await SESSION.close()
+            return
+
+        if args.gemeente:
+            zoek = args.gemeente.lower()
+            te_verwerken = [g for g in csv_gemeenten if zoek in g["gemeente"].lower()]
+            if not te_verwerken:
+                print(f"Geen gemeente gevonden met '{args.gemeente}' in simba-source.csv.")
+                if SESSION is not None:
+                    await SESSION.close()
+                sys.exit(1)
+        elif args.alle:
+            te_verwerken = csv_gemeenten
+        else:
+            parser.print_help()
+            if SESSION is not None:
+                await SESSION.close()
             sys.exit(1)
-    elif args.alle:
-        te_verwerken = csv_gemeenten
-    else:
-        parser.print_help()
-        sys.exit(1)
 
-    output_dir = Path(args.output)
-    map_filter = args.orgaan or None
-    doc_filter = args.document_filter or ("notulen" if args.notulen else None)
+        output_dir = Path(args.output)
+        map_filter = args.orgaan or None
+        doc_filter = args.document_filter or ("notulen" if args.notulen else None)
 
-    totaal_gevonden = 0
-    totaal_gedownload = 0
+        totaal_gevonden = 0
+        totaal_gedownload = 0
 
-    for g in te_verwerken:
-        org_key = g.get("org_key")
-        if not org_key:
-            logger.warning(
-                "⚠️  %s: geen vipKey gevonden op %s — overgeslagen",
-                g["gemeente"], BASE_URL,
+        for g in te_verwerken:
+            org_key = g.get("org_key")
+            if not org_key:
+                logger.warning(
+                    "⚠️  %s: geen vipKey gevonden op %s — overgeslagen",
+                    g["gemeente"], BASE_URL,
+                )
+                continue
+            gevonden, gedownload = await scrape_gemeente(
+                g["gemeente"], org_key, output_dir, args.maanden,
+                map_filter=map_filter, doc_filter=doc_filter,
             )
-            continue
-        gevonden, gedownload = scrape_gemeente(
-            g["gemeente"], org_key, output_dir, args.maanden,
-            map_filter=map_filter, doc_filter=doc_filter,
-        )
-        totaal_gevonden += gevonden
-        totaal_gedownload += gedownload
+            totaal_gevonden += gevonden
+            totaal_gedownload += gedownload
 
-    print(f"\nKlaar. Totaal: {totaal_gevonden} geprobeerd, {totaal_gedownload} gedownload.")
+        if SESSION is not None:
+            await SESSION.close()
+        print(f"\nKlaar. Totaal: {totaal_gevonden} geprobeerd, {totaal_gedownload} gedownload.")
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

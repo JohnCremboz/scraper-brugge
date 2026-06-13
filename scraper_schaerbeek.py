@@ -14,18 +14,23 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document as base_download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
+    print_summary,
     sanitize_filename,
 )
 
@@ -33,20 +38,42 @@ BASE_URL = "https://www.1030.be"
 SITEMAP_URL = "/sitemap.xml"
 NOTULEN_PREFIX = "/nl/notulen-van-gemeenteraad/"
 
-SESSION = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
 
-def init_session(base_url: str = BASE_URL) -> None:
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session(base_url: str = BASE_URL) -> None:
     global SESSION, _config, BASE_URL
+    if SESSION is not None:
+        await SESSION.close()
     BASE_URL = base_url.rstrip("/")
     _config = ScraperConfig(base_url=BASE_URL, rate_limit_delay=0.5, timeout=60)
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
+
+
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=_config.timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 def _parse_datum_uit_slug(slug: str) -> date | None:
     """Parseer datum uit URL-slug DDMMYYYY (bv. '28052025' → 2025-05-28)."""
-    # Negeer suffix zoals -0, -1, ...
     slug = slug.split("-")[0]
     m = re.fullmatch(r"(\d{2})(\d{2})(\d{4})", slug)
     if not m:
@@ -57,13 +84,11 @@ def _parse_datum_uit_slug(slug: str) -> date | None:
         return None
 
 
-def haal_notulen_urls(grensdatum: date) -> list[tuple[str, date]]:
+async def haal_notulen_urls(grensdatum: date) -> list[tuple[str, date]]:
     """Haal alle notulen-URL's op via sitemap die nieuwer zijn dan grensdatum."""
-    assert SESSION is not None
-
-    r = SESSION.get(f"{BASE_URL}{SITEMAP_URL}", timeout=60)
-    if r.status_code != 200:
-        logger.warning("Sitemap niet beschikbaar (%s)", r.status_code)
+    r = await _get(f"{BASE_URL}{SITEMAP_URL}")
+    if not r or r.status_code != 200:
+        logger.warning("Sitemap niet beschikbaar (%s)", getattr(r, "status_code", "?"))
         return []
 
     gezien: set[str] = set()
@@ -71,7 +96,6 @@ def haal_notulen_urls(grensdatum: date) -> list[tuple[str, date]]:
 
     for m in re.finditer(r"<loc>(https?://[^<]+/nl/notulen-van-gemeenteraad/([^<]+))</loc>", r.text):
         url, slug = m.group(1), m.group(2)
-        # Dedupliceer per datum (soms is er een -0 suffix voor dezelfde dag)
         d = _parse_datum_uit_slug(slug)
         if d is None or d < grensdatum:
             continue
@@ -84,13 +108,11 @@ def haal_notulen_urls(grensdatum: date) -> list[tuple[str, date]]:
     return resultaten
 
 
-def haal_pdfs_van_pagina(url: str) -> list[str]:
+async def haal_pdfs_van_pagina(url: str) -> list[str]:
     """Haal alle PDF-links op van een individuele notulenpagina."""
-    assert SESSION is not None
-
-    r = SESSION.get(url, timeout=60)
-    if r.status_code != 200:
-        logger.warning("Kon pagina niet laden (%s): %s", r.status_code, url)
+    r = await _get(url)
+    if not r or r.status_code != 200:
+        logger.warning("Kon pagina niet laden (%s): %s", getattr(r, "status_code", "?"), url)
         return []
 
     soup = BeautifulSoup(r.text, "html.parser")
@@ -109,12 +131,12 @@ def haal_pdfs_van_pagina(url: str) -> list[str]:
     return pdf_urls
 
 
-def haal_documenten(grensdatum: date, doc_filter: str | None) -> list[dict]:
-    notulen = haal_notulen_urls(grensdatum)
+async def haal_documenten(grensdatum: date, doc_filter: str | None) -> list[dict]:
+    notulen = await haal_notulen_urls(grensdatum)
     documenten: list[dict] = []
 
     for url, d in notulen:
-        pdf_urls = haal_pdfs_van_pagina(url)
+        pdf_urls = await haal_pdfs_van_pagina(url)
         for pdf_url in pdf_urls:
             naam = Path(pdf_url.split("?")[0]).stem.replace("-", " ").replace("_", " ")
             if doc_filter and doc_filter.lower() not in naam.lower() and \
@@ -123,19 +145,6 @@ def haal_documenten(grensdatum: date, doc_filter: str | None) -> list[dict]:
             documenten.append({"url": pdf_url, "naam": naam, "datum": d})
 
     return documenten
-
-
-def download_document(doc_url: str, output_dir: Path, filename_hint: str) -> bool:
-    assert SESSION is not None and _config is not None
-    result = base_download_document(
-        session=SESSION,
-        config=_config,
-        doc_url=doc_url,
-        output_dir=output_dir,
-        filename_hint=filename_hint,
-        require_pdf=True,
-    )
-    return result.success
 
 
 def main() -> None:
@@ -160,30 +169,34 @@ def main() -> None:
         print("Geef --alle op (of --orgaan voor compatibiliteit).")
         sys.exit(1)
 
-    init_session(args.base_url)
     maanden = max(1, args.maanden)
     grensdatum = date.today() - timedelta(days=maanden * 31)
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[Schaerbeek] documenten ophalen via sitemap (laatste {maanden} maanden)...")
-    docs = haal_documenten(grensdatum, args.document_filter)
-    if not docs:
-        print("  (geen documenten gevonden)")
-        return
+    async def _run() -> None:
+        await init_session(args.base_url)
+        print(f"[Schaerbeek] documenten ophalen via sitemap (laatste {maanden} maanden)...")
+        docs = await haal_documenten(grensdatum, args.document_filter)
+        if not docs:
+            print("  (geen documenten gevonden)")
+            if SESSION is not None:
+                await SESSION.close()
+            return
 
-    nieuw = 0
-    for idx, doc in enumerate(docs, 1):
-        hint = sanitize_filename(doc["naam"] or Path(doc["url"]).name)
-        print(f"  ({idx}/{len(docs)}) {hint[:60]}...", end="", flush=True)
-        if download_document(doc["url"], output_dir, hint):
-            nieuw += 1
-            print(" [OK]")
-        else:
-            print(" [SKIP]")
+        pdf_docs = [{"url": d["url"], "naam": sanitize_filename(d["naam"] or Path(d["url"]).name)}
+                    for d in docs]
+        resultaten = await async_download_documents_parallel(
+            SESSION, _config, pdf_docs, output_dir, require_pdf=True,
+        )
+        print_summary(resultaten, naam="Schaerbeek")
+        nieuw = sum(1 for r in resultaten if r.success and not r.skipped)
+        print(f"\nKlaar. {nieuw} document(en) gedownload.")
+        if SESSION is not None:
+            await SESSION.close()
 
-    print(f"\nKlaar. {nieuw} document(en) gedownload.")
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

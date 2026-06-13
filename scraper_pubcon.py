@@ -25,27 +25,29 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
 import sys
-import time
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    download_document,
+    async_download_documents_parallel,
+    async_rate_limit,
+    create_async_session,
     logger,
     print_summary,
-    rate_limited_get,
     sanitize_filename,
     DownloadResult,
 )
 
-SESSION = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
 # ---------------------------------------------------------------------------
@@ -74,22 +76,41 @@ ORGAAN_MAP = {
 _DATUM_RE = re.compile(r"(\d{2})/(\d{2})/(\d{4})")
 
 
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
 # ---------------------------------------------------------------------------
 # Sessie-initialisatie
 # ---------------------------------------------------------------------------
 
-def init_session(base_url: str) -> None:
+async def init_session(base_url: str) -> None:
     global SESSION, _config
+    if SESSION is not None:
+        await SESSION.close()
     _config = ScraperConfig(
         base_url=base_url,
         rate_limit_delay=0.3,
         timeout=30,
     )
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
 
 
-def _get(url: str):
-    return rate_limited_get(SESSION, url, _config)
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=_config.timeout)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +186,7 @@ def haal_organen_statisch() -> list[dict]:
     return [{"naam": k, "uuid": k} for k in ORGAAN_MAP]
 
 
-def scrape_gemeente(
+async def scrape_gemeente(
     config: dict,
     output_dir: Path,
     maanden: int = 12,
@@ -187,11 +208,11 @@ def scrape_gemeente(
     gem_dir = output_dir / sanitize_filename(naam)
     gem_dir.mkdir(parents=True, exist_ok=True)
 
-    init_session(base_url)
+    await init_session(base_url)
     logger.info("▶  %s  (grensdatum=%s)", naam, grensdatum)
 
     # Stap 1: Haal zittingen-overzicht
-    resp = _get(base_url + "/LBLOD")
+    resp = await _get(base_url + "/LBLOD")
     if not resp or resp.status_code != 200:
         logger.warning("LBLOD niet bereikbaar: %s", base_url)
         return 0, 0
@@ -222,7 +243,7 @@ def scrape_gemeente(
 
         # Haal zitting-detailpagina
         zitting_url = base_url + zitting["pad"]
-        resp_z = _get(zitting_url)
+        resp_z = await _get(zitting_url)
         if not resp_z or resp_z.status_code != 200:
             continue
         soup_z = BeautifulSoup(resp_z.text, "lxml")
@@ -238,7 +259,7 @@ def scrape_gemeente(
         ap_paden = _verzamel_links(soup_z, "/Agendapunt/Details/")
 
         for ap_pad in ap_paden:
-            resp_ap = _get(base_url + ap_pad)
+            resp_ap = await _get(base_url + ap_pad)
             if not resp_ap or resp_ap.status_code != 200:
                 continue
             soup_ap = BeautifulSoup(resp_ap.text, "lxml")
@@ -254,7 +275,7 @@ def scrape_gemeente(
             item_paden = _verzamel_links(soup_ap, "AgendaPuntItemDetails/")
 
             for item_pad in item_paden:
-                resp_item = _get(base_url + item_pad)
+                resp_item = await _get(base_url + item_pad)
                 if not resp_item or resp_item.status_code != 200:
                     continue
                 soup_item = BeautifulSoup(resp_item.text, "lxml")
@@ -274,11 +295,10 @@ def scrape_gemeente(
                      if df in d["naam"].lower() or df in d["url"].lower()]
         logger.info("   %d na documentfilter", len(alle_docs))
 
-    # Stap 4: Download
-    alle_resultaten: list[DownloadResult] = []
+    # Stap 4: Maak download-lijst met hints
+    download_docs: list[dict] = []
     for doc in alle_docs:
         fname = Path(doc["url"]).name
-        # Prefix met zitting-datum voor sorteerbaarheid
         zitting = doc.get("zitting", {})
         d = zitting.get("datum")
         org = zitting.get("orgaan", "")
@@ -287,19 +307,15 @@ def scrape_gemeente(
         else:
             prefix = f"{zitting.get('datum_tekst', 'onbekend')}_{org}_"
         hint = sanitize_filename(prefix + fname)
+        download_docs.append({"url": doc["url"], "naam": hint})
 
-        result = download_document(
-            SESSION, _config,
-            doc["url"],
-            gem_dir,
-            filename_hint=hint,
-            require_pdf=True,
-        )
-        alle_resultaten.append(result)
+    resultaten = await async_download_documents_parallel(
+        SESSION, _config, download_docs, gem_dir, require_pdf=True,
+    )
 
-    gedownload = sum(1 for r in alle_resultaten if r.success and not r.skipped)
-    print_summary(alle_resultaten, naam=naam)
-    return len(alle_resultaten), gedownload
+    gedownload = sum(1 for r in resultaten if r.success and not r.skipped)
+    print_summary(resultaten, naam=naam)
+    return len(resultaten), gedownload
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +374,6 @@ def main() -> None:
     te_verwerken: list[dict] = []
 
     if args.base_url:
-        # Zoek config op base_url
         for sleutel, conf in GEMEENTEN.items():
             if conf["base_url"] in args.base_url:
                 te_verwerken = [conf]
@@ -384,21 +399,24 @@ def main() -> None:
     output_root = Path(args.output)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    totaal_geprobeerd = 0
-    totaal_gedownload = 0
+    async def _run() -> None:
+        totaal_geprobeerd = 0
+        totaal_gedownload = 0
+        for conf in te_verwerken:
+            gevonden, gedownload = await scrape_gemeente(
+                conf,
+                output_root,
+                maanden=args.maanden,
+                orgaan_filter=args.orgaan,
+                document_filter=args.document_filter,
+            )
+            totaal_geprobeerd += gevonden
+            totaal_gedownload += gedownload
+        if SESSION is not None:
+            await SESSION.close()
+        print(f"\nKlaar. Totaal: {totaal_geprobeerd} geprobeerd, {totaal_gedownload} gedownload.")
 
-    for conf in te_verwerken:
-        gevonden, gedownload = scrape_gemeente(
-            conf,
-            output_root,
-            maanden=args.maanden,
-            orgaan_filter=args.orgaan,
-            document_filter=args.document_filter,
-        )
-        totaal_geprobeerd += gevonden
-        totaal_gedownload += gedownload
-
-    print(f"\nKlaar. Totaal: {totaal_geprobeerd} geprobeerd, {totaal_gedownload} gedownload.")
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

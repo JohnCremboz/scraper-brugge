@@ -27,19 +27,21 @@ Gebruik:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
 import sys
-import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
+import aiohttp
 
 from base_scraper import (
     DownloadResult,
     ScraperConfig,
-    create_session,
+    async_rate_limit,
+    create_async_session,
     logger,
     print_summary,
     safe_output_path,
@@ -58,13 +60,19 @@ PAGINA_GROOTTE = 20
 # Globale staat (één sessie per run)
 # ---------------------------------------------------------------------------
 
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 _gemeente_naam: str = ""
 _classificatie: str = ""
 
 
-def init_session(base_url: str) -> None:
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session(base_url: str) -> None:
     """Initialiseer HTTP-sessie en extraheer gemeente/classificatie uit URL."""
     global SESSION, _config, _gemeente_naam, _classificatie
 
@@ -80,19 +88,27 @@ def init_session(base_url: str) -> None:
         logger.error("Ongeldige base-url: %s. Verwacht formaat: .../Gemeente/Classificatie", base_url)
         sys.exit(1)
 
+    if SESSION is not None:
+        await SESSION.close()
     _config = ScraperConfig(base_url=PLATFORM_BASE)
-    SESSION = create_session(_config)
+    SESSION = create_async_session(_config)
 
 
-def _api_get(pad: str, params: dict | None = None) -> dict | None:
+async def _api_get(pad: str, params: dict | None = None) -> dict | None:
     """JSON GET request naar het platform. Geeft None bij fouten."""
-    assert SESSION is not None
+    if SESSION is None or _config is None:
+        return None
     url = f"{PLATFORM_BASE}{pad}"
     try:
-        r = SESSION.get(url, params=params, timeout=30)
-        if r.status_code == 200:
-            return r.json()
-        logger.debug("API GET %s → %d", url, r.status_code)
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url,
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status == 200:
+                return await resp.json(content_type=None)
+            logger.debug("API GET %s → %d", url, resp.status)
     except Exception as exc:
         logger.warning("API GET fout %s: %s", url, exc)
     return None
@@ -102,9 +118,9 @@ def _api_get(pad: str, params: dict | None = None) -> dict | None:
 # Stap 1 – bestuurseenheid ophalen
 # ---------------------------------------------------------------------------
 
-def haal_bestuurseenheid_id(naam: str, classificatie: str) -> str | None:
+async def haal_bestuurseenheid_id(naam: str, classificatie: str) -> str | None:
     """Zoek de bestuurseenheid-ID op via naam en classificatielabel."""
-    data = _api_get("/bestuurseenheden", {
+    data = await _api_get("/bestuurseenheden", {
         "filter[:exact:naam]": naam,
         "filter[classificatie][:exact:label]": classificatie,
         "include": "classificatie",
@@ -123,12 +139,11 @@ def haal_bestuurseenheid_id(naam: str, classificatie: str) -> str | None:
 # Stap 2 – zittingen ophalen (gepagineerd)
 # ---------------------------------------------------------------------------
 
-def haal_zittingen(
+async def haal_zittingen(
     bestuurseenheid_id: str,
     from_datum: str | None = None,
 ) -> tuple[list[dict], dict[str, dict]]:
-    """
-    Haal alle zittingen op voor een bestuurseenheid (gepagineerd).
+    """Haal alle zittingen op voor een bestuurseenheid (gepagineerd).
 
     Returns:
         (lijst van zittingen, dict van geïncludeerde resources {type:id → resource})
@@ -151,24 +166,21 @@ def haal_zittingen(
         if from_datum:
             params["filter[:gte:gestart-op-tijdstip]"] = from_datum
 
-        data = _api_get("/zittingen", params)
+        data = await _api_get("/zittingen", params)
         if not data or not data.get("data"):
             break
 
         alle_zittingen.extend(data["data"])
 
-        # Verwerk included resources
         for res in data.get("included", []):
             sleutel = f"{res['type']}:{res['id']}"
             alle_included[sleutel] = res
 
-        # Paginering stoppen als er geen volgende pagina is
         links = data.get("links", {})
         if "next" not in links:
             break
 
         pagina += 1
-        time.sleep(0.2)
 
     logger.info("Gevonden: %d zittingen voor %s/%s", len(alle_zittingen), _gemeente_naam, _classificatie)
     return alle_zittingen, alle_included
@@ -180,12 +192,10 @@ def orgaan_naam_voor_zitting(zitting: dict, included: dict[str, dict]) -> str:
     if not orgaan_ref:
         return _gemeente_naam
 
-    # API geeft type 'bestuursorganen' (meervoud) terug als sleutel
     orgaan = included.get(f"bestuursorganen:{orgaan_ref['id']}")
     if not orgaan:
         return _gemeente_naam
 
-    # Volg is-tijdsspecialisatie-van → parent orgaan met naam
     parent_ref = orgaan.get("relationships", {}).get("is-tijdsspecialisatie-van", {}).get("data")
     if not parent_ref:
         return _gemeente_naam
@@ -205,7 +215,7 @@ def datum_voor_zitting(zitting: dict) -> str:
         or ""
     )
     if tijdstip:
-        return tijdstip[:10]  # ISO datum-prefix
+        return tijdstip[:10]
     return "onbekend"
 
 
@@ -213,14 +223,9 @@ def datum_voor_zitting(zitting: dict) -> str:
 # Stap 3 – documentdetails ophalen per zitting
 # ---------------------------------------------------------------------------
 
-def haal_zitting_detail(zitting_id: str) -> tuple[dict | None, dict[str, dict]]:
-    """
-    Haal details op van één zitting, inclusief notulen-bestand en besluitenlijst-inhoud.
-
-    Returns:
-        (zitting data dict, included resources dict)
-    """
-    data = _api_get(f"/zittingen/{zitting_id}", {
+async def haal_zitting_detail(zitting_id: str) -> tuple[dict | None, dict[str, dict]]:
+    """Haal details op van één zitting, inclusief notulen-bestand en besluitenlijst-inhoud."""
+    data = await _api_get(f"/zittingen/{zitting_id}", {
         "include": "notulen,notulen.file,besluitenlijst",
     })
     if not data or "data" not in data:
@@ -237,16 +242,17 @@ def haal_zitting_detail(zitting_id: str) -> tuple[dict | None, dict[str, dict]]:
 # Stap 4 – download bestand / sla inhoud op
 # ---------------------------------------------------------------------------
 
-def download_bestand(
+async def download_bestand(
     file_id: str,
     output_dir: Path,
     bestandsnaam: str,
 ) -> DownloadResult:
     """Download een bestand van /files/{id}/download."""
-    assert SESSION is not None and _config is not None
+    if SESSION is None or _config is None:
+        return DownloadResult(url="", success=False, error="Sessie niet geïnitialiseerd")
+
     url = f"{PLATFORM_BASE}/files/{file_id}/download"
 
-    # Zorg dat bestandsnaam eindigt op .html
     if not bestandsnaam.lower().endswith(".html"):
         bestandsnaam += ".html"
     bestandsnaam = sanitize_filename(bestandsnaam)
@@ -267,27 +273,31 @@ def download_bestand(
     uitvoerpad.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        r = SESSION.get(url, timeout=60)
-        if r.status_code != 200:
-            return DownloadResult(url=url, success=False, error=f"HTTP {r.status_code}")
+        await async_rate_limit(_config)
+        async with SESSION.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            if resp.status != 200:
+                return DownloadResult(url=url, success=False, error=f"HTTP {resp.status}")
 
-        if _config and _config.content_filter:
-            from mandaat_filter import is_relevant
-            if not is_relevant(r.text):
-                return DownloadResult(
-                    url=url, success=False, filtered=True,
-                    error="Gefilterd: geen mandaatrelevante inhoud",
-                )
+            inhoud = await resp.read()
 
-        tijdelijk = uitvoerpad.with_suffix(".tmp")
-        try:
-            tijdelijk.write_bytes(r.content)
-            tijdelijk.replace(uitvoerpad)
-        except Exception:
-            tijdelijk.unlink(missing_ok=True)
-            raise
+            if _config and _config.content_filter:
+                from mandaat_filter import is_relevant
+                tekst = inhoud.decode("utf-8", errors="replace")
+                if not is_relevant(tekst):
+                    return DownloadResult(
+                        url=url, success=False, filtered=True,
+                        error="Gefilterd: geen mandaatrelevante inhoud",
+                    )
 
-        return DownloadResult(url=url, success=True, path=uitvoerpad)
+            tijdelijk = uitvoerpad.with_suffix(".tmp")
+            try:
+                tijdelijk.write_bytes(inhoud)
+                tijdelijk.replace(uitvoerpad)
+            except Exception:
+                tijdelijk.unlink(missing_ok=True)
+                raise
+
+            return DownloadResult(url=url, success=True, path=uitvoerpad)
     except Exception as exc:
         return DownloadResult(url=url, success=False, error=str(exc))
 
@@ -325,32 +335,29 @@ def sla_inhoud_op(
 # Hoofdlogica
 # ---------------------------------------------------------------------------
 
-def scrape(
+async def scrape(
     output_map: str = "pdfs",
     maanden: int = 12,
     alle: bool = False,
 ) -> None:
     """Scrape notulen en besluitenlijsten voor de geconfigureerde gemeente."""
-    assert SESSION is not None
+    if SESSION is None:
+        return
 
-    # Zoek bestuurseenheid-ID op
-    beid = haal_bestuurseenheid_id(_gemeente_naam, _classificatie)
+    beid = await haal_bestuurseenheid_id(_gemeente_naam, _classificatie)
     if not beid:
         sys.exit(1)
 
-    # Bepaal datumfilter
     from_datum: str | None = None
     if not alle:
         grens = datetime.now(timezone.utc) - timedelta(days=maanden * 31)
         from_datum = grens.strftime("%Y-%m-%dT00:00:00")
 
-    # Haal zittingen op
-    zittingen, included = haal_zittingen(beid, from_datum=from_datum)
+    zittingen, included = await haal_zittingen(beid, from_datum=from_datum)
     if not zittingen:
         logger.info("Geen zittingen gevonden.")
         return
 
-    # Outputmap: pdfs/{gemeente_naam}/
     gemeente_dir = Path(output_map) / sanitize_filename(_gemeente_naam)
 
     resultaten: list[DownloadResult] = []
@@ -360,7 +367,6 @@ def scrape(
         datum = datum_voor_zitting(zitting)
         orgaan = orgaan_naam_voor_zitting(zitting, included)
 
-        # Controleer of notulen of besluitenlijst beschikbaar zijn
         rels = zitting.get("relationships", {})
         heeft_notulen = bool(rels.get("notulen", {}).get("data"))
         heeft_besluitenlijst = bool(rels.get("besluitenlijst", {}).get("data"))
@@ -368,8 +374,7 @@ def scrape(
         if not heeft_notulen and not heeft_besluitenlijst:
             continue
 
-        # Haal details op
-        detail, detail_included = haal_zitting_detail(zitting_id)
+        detail, detail_included = await haal_zitting_detail(zitting_id)
         if not detail:
             logger.warning("Details ophalen mislukt voor zitting %s", zitting_id)
             continue
@@ -384,14 +389,12 @@ def scrape(
                 if notulen_res:
                     file_ref = notulen_res.get("relationships", {}).get("file", {}).get("data")
                     if file_ref:
-                        # Notulen via bestandsdownload
                         bestandsnaam = f"{datum}_{sanitize_filename(orgaan)}_notulen.html"
-                        res = download_bestand(file_ref["id"], gemeente_dir, bestandsnaam)
+                        res = await download_bestand(file_ref["id"], gemeente_dir, bestandsnaam)
                         if not res.skipped:
                             _log_resultaat(res, datum, orgaan, "notulen")
                         resultaten.append(res)
                     else:
-                        # Notulen via inline inhoud
                         inhoud = notulen_res.get("attributes", {}).get("inhoud", "")
                         if inhoud:
                             bestandsnaam = f"{datum}_{sanitize_filename(orgaan)}_notulen.html"
@@ -413,8 +416,6 @@ def scrape(
                         if not res.skipped:
                             _log_resultaat(res, datum, orgaan, "besluitenlijst")
                         resultaten.append(res)
-
-        time.sleep(0.3)  # Beleefd wachten tussen zitting-detail calls
 
     print_summary(resultaten, naam=f"{_gemeente_naam}/{_classificatie}")
 
@@ -468,7 +469,6 @@ Voorbeelden:
         default="pdfs",
         help="Uitvoermap (standaard: pdfs)",
     )
-    # Compatibiliteitsopties voor scraper_groep.py
     parser.add_argument("--orgaan", "-o", type=str, default=None,
                         help="Niet gebruikt (compatibiliteit met scraper_groep.py)")
     parser.add_argument("--document-filter", "-f", type=str, default=None,
@@ -480,12 +480,17 @@ Voorbeelden:
 
     args = parser.parse_args()
 
-    init_session(args.base_url)
-    scrape(
-        output_map=args.output,
-        maanden=args.maanden,
-        alle=args.alle,
-    )
+    async def _run() -> None:
+        await init_session(args.base_url)
+        await scrape(
+            output_map=args.output,
+            maanden=args.maanden,
+            alle=args.alle,
+        )
+        if SESSION is not None:
+            await SESSION.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

@@ -33,21 +33,21 @@ Patroon per bestand: `session.get()` → `await session.get()`, `def main()` →
 - [x] 2c `scraper_lblod.py`
 - [x] 2d `scraper_imio.py`
 - [x] 2e `scraper_brussel.py`
-- [ ] 2f `scraper_docodis.py`
-- [ ] 2g `scraper_gelinktnotuleren.py`
-- [ ] 2h `scraper_icordis.py`
-- [ ] 2i `scraper_idelibe.py`
-- [ ] 2j `scraper_irisnet.py`
-- [ ] 2k `scraper_ixelles.py`
-- [ ] 2l `scraper_linkebeek.py`
-- [ ] 2m `scraper_menen.py`
-- [ ] 2n `scraper_molenbeek.py`
-- [ ] 2o `scraper_provantwerpen.py`
-- [ ] 2p `scraper_pubcon.py`
-- [ ] 2q `scraper_ranst.py`
-- [ ] 2r `scraper_schaerbeek.py`
-- [ ] 2s `scraper_vlaamsbrabant.py`
-- [ ] 2t `scraper_waalse_provincies.py`
+- [x] 2f `scraper_docodis.py`
+- [x] 2g `scraper_gelinktnotuleren.py`
+- [x] 2h `scraper_icordis.py`
+- [x] 2i `scraper_idelibe.py`
+- [x] 2j `scraper_irisnet.py`
+- [x] 2k `scraper_ixelles.py`
+- [x] 2l `scraper_linkebeek.py`
+- [x] 2m `scraper_menen.py`
+- [x] 2n `scraper_molenbeek.py`
+- [x] 2o `scraper_provantwerpen.py`
+- [x] 2p `scraper_pubcon.py`
+- [x] 2q `scraper_ranst.py`
+- [x] 2r `scraper_schaerbeek.py`
+- [x] 2s `scraper_vlaamsbrabant.py`
+- [x] 2t `scraper_waalse_provincies.py`
 
 ### Stap 3 — Playwright scrapers (sync → async_playwright)
 - [ ] 3a `scraper.py`

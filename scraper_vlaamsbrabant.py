@@ -15,32 +15,32 @@ Platform structuur:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 import sys
-import time
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
-from tqdm import tqdm
 
 from base_scraper import (
     ScraperConfig,
-    create_session,
-    robust_get,
+    async_rate_limit,
+    create_async_session,
+    logger,
     sanitize_filename,
 )
 
-SESSION: requests.Session | None = None
+SESSION: aiohttp.ClientSession | None = None
 _config: ScraperConfig | None = None
 
 BASE_URL = "https://bestuur.vlaamsbrabant.be"
 NAAM = "Provincie Vlaams-Brabant"
 
-# Categorie- en type-namen (uit de filter-selects op de homepage)
 CATEGORIEEN = {"1": "Agenda", "2": "Notulen", "3": "Besluit"}
 TYPES = {
     "1": "Deputatie",
@@ -55,20 +55,42 @@ TYPES = {
 }
 
 
-def _get(url: str) -> requests.Response | None:
-    return robust_get(SESSION, url)
+@dataclass
+class _Resp:
+    status_code: int
+    text: str
+
+
+async def init_session() -> None:
+    global SESSION, _config
+    if SESSION is not None:
+        await SESSION.close()
+    _config = ScraperConfig(base_url=BASE_URL)
+    SESSION = create_async_session(_config)
+
+
+async def _get(url: str) -> _Resp | None:
+    if SESSION is None or _config is None:
+        return None
+    try:
+        await async_rate_limit(_config)
+        async with SESSION.get(
+            url, timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
+            text = await resp.text()
+            return _Resp(status_code=resp.status, text=text)
+    except Exception as exc:
+        logger.warning("GET mislukt %s: %s", url, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
 # Publicaties ophalen van de homepage
 # ---------------------------------------------------------------------------
 
-def haal_publicaties(maanden: int = 3) -> list[dict]:
-    """
-    Parse de overzichtstabel op de homepage.
-    Filtert op datum: alleen publicaties van de afgelopen `maanden` maanden.
-    """
-    resp = _get(BASE_URL)
+async def haal_publicaties(maanden: int = 3) -> list[dict]:
+    """Parse de overzichtstabel op de homepage."""
+    resp = await _get(BASE_URL)
     if resp is None:
         return []
 
@@ -87,7 +109,6 @@ def haal_publicaties(maanden: int = 3) -> list[dict]:
         if not xshow:
             continue
 
-        # Datum (Unix timestamp)
         ts_m = re.search(r"filterDate == '(\d+)'", xshow)
         if not ts_m:
             continue
@@ -95,13 +116,11 @@ def haal_publicaties(maanden: int = 3) -> list[dict]:
         if ts < cutoff_ts:
             continue
 
-        # Categorie en type
         cat_m = re.search(r"filterCategory == '(\d+)'", xshow)
         type_m = re.search(r"filterType == '(\d+)'", xshow)
         cat_id = cat_m.group(1) if cat_m else ""
         type_id = type_m.group(1) if type_m else ""
 
-        # Datum en titel uit cellen
         cells = row.find_all("td")
         if len(cells) < 2:
             continue
@@ -132,8 +151,8 @@ def haal_publicaties(maanden: int = 3) -> list[dict]:
 # Publicatie detail: agendapunten + stemmingen
 # ---------------------------------------------------------------------------
 
-def haal_detail(publicatie: dict) -> dict:
-    resp = _get(publicatie["url"])
+async def haal_detail(publicatie: dict) -> dict:
+    resp = await _get(publicatie["url"])
     if resp is None:
         publicatie["agendapunten"] = []
         return publicatie
@@ -141,26 +160,22 @@ def haal_detail(publicatie: dict) -> dict:
     soup = BeautifulSoup(resp.text, "lxml")
     agendapunten = []
 
-    # --- Structuur 1: Besluit-pagina's via <dl typeof="besluit:Agendapunt"> ---
     for dl in soup.find_all("dl", attrs={"typeof": "besluit:Agendapunt"}):
         dd = dl.find("dd")
         if dd:
             tekst = (dd.get("content") or dd.get_text(strip=True)).strip()
-            # Tekst formaat: "1. Titel van het agendapunt"
             m = re.match(r"^(\d+[\w.]*\.?)\s+(.*)", tekst)
             if m:
                 agendapunten.append({"nr": m.group(1), "titel": m.group(2).strip()[:300]})
             elif tekst:
                 agendapunten.append({"nr": "", "titel": tekst[:300]})
 
-    # --- Structuur 2: Agenda/Notulen-pagina's via <span> na "Overzicht Agendapunten" ---
     if not agendapunten:
         overzicht = soup.find(string=re.compile(r"Overzicht Agendapunten", re.I))
         if overzicht:
             parent = overzicht.find_parent()
             if parent:
                 for span in parent.find_next_siblings("span"):
-                    # <span><span>{nr}</span>. <span>{titel}</span></span>
                     inner_spans = span.find_all("span", recursive=False)
                     if len(inner_spans) >= 2:
                         nr = inner_spans[0].get_text(strip=True)
@@ -207,13 +222,11 @@ def genereer_html(publicaties: list[dict], output_dir: Path) -> Path:
 # Hoofd scrape-functie
 # ---------------------------------------------------------------------------
 
-def scrape(maanden: int = 3, output_base: str = "pdfs") -> None:
-    global SESSION, _config
+async def scrape(maanden: int = 3, output_base: str = "pdfs") -> None:
     output_dir = Path(output_base) / sanitize_filename(NAAM)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _config = ScraperConfig(base_url=BASE_URL, output_dir=output_dir)
-    SESSION = create_session(_config)
+    await init_session()
 
     print(f"\n{'=' * 70}")
     print(f"  Naam     : {NAAM}")
@@ -222,16 +235,18 @@ def scrape(maanden: int = 3, output_base: str = "pdfs") -> None:
     print(f"{'=' * 70}")
 
     print(f"[1] Publicaties ophalen (afgelopen {maanden} maanden)...")
-    publicaties = haal_publicaties(maanden)
+    publicaties = await haal_publicaties(maanden)
     print(f"    ✓ {len(publicaties)} publicaties gevonden")
 
     if not publicaties:
         print("  Geen publicaties gevonden.")
+        if SESSION is not None:
+            await SESSION.close()
         return
 
     print("[2] Details ophalen...")
-    for p in tqdm(publicaties, desc="Detail pagina's"):
-        haal_detail(p)
+    taken = [haal_detail(p) for p in publicaties]
+    publicaties = list(await asyncio.gather(*taken))
 
     print("[3] Opslaan...")
     meta_pad = output_dir / f"{sanitize_filename(NAAM)}_metadata.json"
@@ -248,6 +263,9 @@ def scrape(maanden: int = 3, output_base: str = "pdfs") -> None:
     print(f"  Agendapunten  : {totaal_aps}")
     print(f"{'=' * 70}\n")
 
+    if SESSION is not None:
+        await SESSION.close()
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -257,7 +275,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Scraper voor Provincie Vlaams-Brabant")
     parser.add_argument("--maanden", type=int, default=3, help="Aantal maanden terug (standaard 3)")
     parser.add_argument("--output", "-d", type=str, default="pdfs", help="Uitvoermap (standaard: pdfs)")
-    # Standaard TUI-argumenten (worden genegeerd)
     parser.add_argument("--base-url", type=str, default="")
     parser.add_argument("--alle", action="store_true")
     parser.add_argument("--orgaan", type=str)
@@ -265,7 +282,7 @@ def main() -> None:
     parser.add_argument("--zichtbaar", action="store_true")
     parser.add_argument("--document-filter", type=str)
     args = parser.parse_args()
-    scrape(maanden=args.maanden, output_base=args.output)
+    asyncio.run(scrape(maanden=args.maanden, output_base=args.output))
 
 
 if __name__ == "__main__":
