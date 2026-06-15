@@ -668,99 +668,113 @@ async def async_download_document(
         if _hint_path.exists():
             return DownloadResult(url=full_url, success=True, path=_hint_path, skipped=True)
 
-    try:
-        await async_rate_limit(config)
-        async with session.get(full_url, allow_redirects=True) as resp:
-            if resp.status != 200:
-                return DownloadResult(url=full_url, success=False, error=f"HTTP {resp.status}")
+    _RETRYABLE = (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError,
+                  aiohttp.ClientConnectionError, asyncio.TimeoutError)
+    last_error: str = ""
 
-            filename = _extract_filename(dict(resp.headers), filename_hint, doc_url)
+    for poging in range(3):
+        try:
+            if poging > 0:
+                await asyncio.sleep(1.5 * poging)
+            await async_rate_limit(config)
+            async with session.get(full_url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return DownloadResult(url=full_url, success=False, error=f"HTTP {resp.status}")
 
-            _GEBLOKKEERDE_EXTENSIES = {".mp3", ".wav", ".mp4", ".avi", ".mkv", ".ogg", ".flac"}
-            if any(filename.lower().endswith(ext) for ext in _GEBLOKKEERDE_EXTENSIES):
-                return DownloadResult(
-                    url=full_url, success=False, filtered=True,
-                    error=f"Geblokkeerd bestandstype: {Path(filename).suffix}",
-                )
+                filename = _extract_filename(dict(resp.headers), filename_hint, doc_url)
 
-            if "." not in filename[-6:]:
-                content_type = resp.headers.get("content-type", "")
-                if "pdf" in content_type:
-                    filename += ".pdf"
-                elif "html" in content_type:
-                    return DownloadResult(url=full_url, success=False, error="HTML response (geen document)")
-                else:
-                    filename += ".bin"
-
-            try:
-                output_path = safe_output_path(
-                    output_dir, filename=filename,
-                    max_filename_length=config.max_filename_length,
-                )
-            except ValueError as e:
-                return DownloadResult(url=full_url, success=False, error=str(e))
-
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            if output_path.exists():
-                stem = output_path.stem
-                suffix = output_path.suffix
-                counter = 2
-                while output_path.exists():
-                    output_path = output_path.parent / f"{stem}_{counter}{suffix}"
-                    counter += 1
-
-            chunks: list[bytes] = []
-            first_chunk = True
-            async for chunk in resp.content.iter_chunked(8192):
-                if chunk:
-                    if first_chunk:
-                        first_chunk = False
-                        if require_pdf and not chunk.startswith(b"%PDF"):
-                            return DownloadResult(
-                                url=full_url, success=False,
-                                error="Niet een geldig PDF-bestand",
-                            )
-                    chunks.append(chunk)
-
-            if not chunks:
-                return DownloadResult(url=full_url, success=False, error="Lege response")
-
-            if config.content_filter:
-                from mandaat_filter import is_relevant_bytes
-                content = b"".join(chunks)
-                loop = asyncio.get_running_loop()
-                relevant, _ = await loop.run_in_executor(None, is_relevant_bytes, content)
-                if not relevant:
+                _GEBLOKKEERDE_EXTENSIES = {".mp3", ".wav", ".mp4", ".avi", ".mkv", ".ogg", ".flac"}
+                if any(filename.lower().endswith(ext) for ext in _GEBLOKKEERDE_EXTENSIES):
                     return DownloadResult(
                         url=full_url, success=False, filtered=True,
-                        error="Gefilterd: geen mandaatrelevante inhoud",
+                        error=f"Geblokkeerd bestandstype: {Path(filename).suffix}",
                     )
-                chunks = [content]
 
-            temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-            try:
-                with open(temp_path, "wb") as f:
-                    for chunk in chunks:
-                        f.write(chunk)
-                temp_path.replace(output_path)
-            except Exception:
-                temp_path.unlink(missing_ok=True)
-                raise
+                if "." not in filename[-6:]:
+                    content_type = resp.headers.get("content-type", "")
+                    if "pdf" in content_type:
+                        filename += ".pdf"
+                    elif "html" in content_type:
+                        return DownloadResult(url=full_url, success=False, error="HTML response (geen document)")
+                    else:
+                        filename += ".bin"
 
-            return DownloadResult(url=full_url, success=True, path=output_path)
+                try:
+                    output_path = safe_output_path(
+                        output_dir, filename=filename,
+                        max_filename_length=config.max_filename_length,
+                    )
+                except ValueError as e:
+                    return DownloadResult(url=full_url, success=False, error=str(e))
 
-    except aiohttp.ClientError as e:
-        return DownloadResult(
-            url=full_url, success=False,
-            error=f"Request error: {type(e).__name__}: {e}",
-        )
-    except Exception as e:
-        logger.exception("Onverwachte fout bij download %s", full_url)
-        return DownloadResult(
-            url=full_url, success=False,
-            error=f"Onverwachte fout: {type(e).__name__}: {e}",
-        )
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                if output_path.exists():
+                    stem = output_path.stem
+                    suffix = output_path.suffix
+                    counter = 2
+                    while output_path.exists():
+                        output_path = output_path.parent / f"{stem}_{counter}{suffix}"
+                        counter += 1
+
+                chunks: list[bytes] = []
+                first_chunk = True
+                async for chunk in resp.content.iter_chunked(8192):
+                    if chunk:
+                        if first_chunk:
+                            first_chunk = False
+                            if require_pdf and not chunk.startswith(b"%PDF"):
+                                return DownloadResult(
+                                    url=full_url, success=False,
+                                    error="Niet een geldig PDF-bestand",
+                                )
+                        chunks.append(chunk)
+
+                if not chunks:
+                    return DownloadResult(url=full_url, success=False, error="Lege response")
+
+                if config.content_filter:
+                    from mandaat_filter import is_relevant_bytes
+                    content = b"".join(chunks)
+                    loop = asyncio.get_running_loop()
+                    relevant, _ = await loop.run_in_executor(None, is_relevant_bytes, content)
+                    if not relevant:
+                        return DownloadResult(
+                            url=full_url, success=False, filtered=True,
+                            error="Gefilterd: geen mandaatrelevante inhoud",
+                        )
+                    chunks = [content]
+
+                temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+                try:
+                    with open(temp_path, "wb") as f:
+                        for chunk in chunks:
+                            f.write(chunk)
+                    temp_path.replace(output_path)
+                except Exception:
+                    temp_path.unlink(missing_ok=True)
+                    raise
+
+                return DownloadResult(url=full_url, success=True, path=output_path)
+
+        except _RETRYABLE as e:
+            last_error = f"Request error: {type(e).__name__}: {e}"
+            if poging < 2:
+                logger.debug("Download retry %d/3 voor %s: %s", poging + 1, full_url, e)
+            continue
+        except aiohttp.ClientError as e:
+            return DownloadResult(
+                url=full_url, success=False,
+                error=f"Request error: {type(e).__name__}: {e}",
+            )
+        except Exception as e:
+            logger.exception("Onverwachte fout bij download %s", full_url)
+            return DownloadResult(
+                url=full_url, success=False,
+                error=f"Onverwachte fout: {type(e).__name__}: {e}",
+            )
+
+    return DownloadResult(url=full_url, success=False, error=last_error)
 
 
 async def async_download_documents_parallel(

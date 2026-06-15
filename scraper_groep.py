@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -327,6 +328,10 @@ TYPES: dict[str, dict] = {
         "kleur": "red",
     },
 }
+
+# Playwright-based scrapers: cap concurrent processes to avoid OOM (each launches Chromium ~400 MB)
+_PLAYWRIGHT_TYPES: frozenset[str] = frozenset({"smartcities", "deliberations", "wordpress"})
+_PLAYWRIGHT_PARALLEL_MAX: int = 3
 
 STIJL = Style([
     ("qmark",        "fg:#00b4d8 bold"),
@@ -701,6 +706,7 @@ def scrape_batch(
     pauze: float = 2.0,
     parallel: int = 1,
     geen_inhoudfilter: bool = False,
+    skip_bestaande: bool = False,
 ) -> None:
     """Doorloop alle gemeenten en voer de juiste scraper uit voor elk."""
     totaal = len(gemeenten)
@@ -709,26 +715,48 @@ def scrape_batch(
     mislukt = 0
     parallel = max(1, parallel)
 
+    # Playwright scrapers each launch Chromium (~400 MB). Cap their concurrency to
+    # avoid OOM when the user requests high --parallel values.
+    playwright_sem = threading.Semaphore(min(parallel, _PLAYWRIGHT_PARALLEL_MAX))
+
     console.print(Rule(
         f"[bold cyan]Batch scrapen — {totaal} gemeente(n)[/bold cyan]",
         style="cyan",
     ))
     if parallel > 1:
-        console.print(f"[dim]Parallelle subprocessen: {parallel}[/dim]")
+        console.print(f"[dim]Parallelle subprocessen: {parallel} "
+                      f"(Playwright-types max {_PLAYWRIGHT_PARALLEL_MAX})[/dim]")
     console.print()
 
+    # Build job list; optionally skip municipalities that already have PDFs.
     jobs: list[tuple[int, dict, list[str] | None]] = []
     for idx, gemeente in enumerate(gemeenten, 1):
         cmd = bouw_commando(
             gemeente, orgaan, maanden, output_basis,
             doc_filter, agendapunten, zichtbaar,
         )
+        if skip_bestaande and cmd is not None:
+            slug = sanitize_slug(gemeente["gemeente"])
+            out_dir = Path(output_basis) / slug
+            if out_dir.exists() and any(out_dir.rglob("*.pdf")):
+                console.print(
+                    f"[dim][{idx}/{totaal}] overgeslagen (al verwerkt): "
+                    f"{gemeente['gemeente']}[/dim]"
+                )
+                overgeslagen += 1
+                continue
         jobs.append((idx, gemeente, cmd))
+
+    def _run_met_sem(idx: int, gemeente: dict, cmd: list[str] | None) -> ScrapeResult:
+        if gemeente["type"] in _PLAYWRIGHT_TYPES:
+            with playwright_sem:
+                return _run_gemeente_scraper(idx, totaal, gemeente, cmd, geen_inhoudfilter)
+        return _run_gemeente_scraper(idx, totaal, gemeente, cmd, geen_inhoudfilter)
 
     if parallel == 1:
         results = []
         for pos, (idx, gemeente, cmd) in enumerate(jobs, 1):
-            result = _run_gemeente_scraper(idx, totaal, gemeente, cmd, geen_inhoudfilter)
+            result = _run_met_sem(idx, gemeente, cmd)
             results.append(result)
             _print_scrape_result(result)
             if pos < len(jobs):
@@ -738,16 +766,18 @@ def scrape_batch(
         with ThreadPoolExecutor(max_workers=parallel) as executor:
             futures = []
             for pos, (idx, gemeente, cmd) in enumerate(jobs, 1):
-                futures.append(executor.submit(_run_gemeente_scraper, idx, totaal, gemeente, cmd, geen_inhoudfilter))
+                futures.append(executor.submit(_run_met_sem, idx, gemeente, cmd))
                 if pauze > 0 and pos < len(jobs):
                     time.sleep(pauze)
 
+            completed = 0
             for future in as_completed(futures):
                 result = future.result()
+                completed += 1
                 results_by_idx[result.idx] = result
                 status = "OK" if result.success else "SKIP" if result.skipped else "FOUT"
                 console.print(
-                    f"[dim][{len(results_by_idx)}/{totaal}] klaar: "
+                    f"[dim][{completed}/{len(jobs)}] klaar: "
                     f"{result.gemeente['gemeente']} ({status})[/dim]"
                 )
 
@@ -1114,6 +1144,11 @@ Voorbeelden:
              "(GDPR-proportionaliteit). Gebruik dit enkel voor debugging of "
              "als je alle documenten wil bewaren.",
     )
+    parser.add_argument(
+        "--skip-bestaande", action="store_true",
+        help="Sla gemeenten over waarvoor al PDFs bestaan in de uitvoermap. "
+             "Handig om een onderbroken batch te hervatten.",
+    )
 
     args = parser.parse_args()
 
@@ -1176,6 +1211,7 @@ Voorbeelden:
         pauze=args.pauze,
         parallel=args.parallel,
         geen_inhoudfilter=args.geen_inhoudfilter,
+        skip_bestaande=args.skip_bestaande,
     )
 
 

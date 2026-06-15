@@ -181,9 +181,8 @@ def main() -> None:
     output_root = Path(args.output)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    init_session()
-
     async def _run() -> None:
+        init_session()
         geprobeerd, gedownload = await scrape(
             maanden=args.maanden,
             document_filter=args.document_filter,

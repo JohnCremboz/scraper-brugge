@@ -1,10 +1,11 @@
 ﻿<#
 .SYNOPSIS
-    Blacklist-based cleaner for the pdfs/ scraper output directory.
-.EXAMPLE
-    .\clean_output.ps1              # dry run (veilig, toont wat verwijderd zou worden)
-    .\clean_output.ps1 -Delete      # effectief verwijderen
-    .\clean_output.ps1 -Delete -LogFile removed.csv
+    VEROUDERD — gebruik clean_output.py (Linux/Mac/Windows, vereist geen PowerShell).
+    De authoratieve filterlogica zit in document_filters.py; clean_output.py gebruikt
+    die rechtstreeks. Dit PS-script wordt niet langer onderhouden.
+
+    uv run python clean_output.py              # dry run
+    uv run python clean_output.py --delete     # effectief verwijderen
 #>
 
 param(
@@ -111,8 +112,7 @@ $BlacklistPatterns = @(
     "*brochure*"
     "*nota*"
     "*straat*"
-    # "*laan*" verwijderd: matcht "West-Vlaanderen", "Oost-Vlaanderen", "rioolaansluiting" → te breed
-    # echte "laan"-besluiten worden al gevangen door *verordening* en *signalisatie*
+    "*laan*"       # straatnamen; Vlaanderen wordt via whitelist beschermd
     "*dreef*"
     "*plein*"
     "*markt*"
@@ -155,6 +155,7 @@ $WhitelistPatterns = @(
     "*afvaardiging*"       # afvaardiging naar AV intercommunale
     "*mandataris*"         # mandataris (zeer specifiek)
     "*mandaat*"            # mandaat in bestandsnaam primeert altijd boven blacklist
+    "*mandat*"             # FR mandaat
     # FR — zonder accent (bestaand) en MET accent (nieuw)
     # PS -ilike is NIET accent-insensitief: "é" ≠ "e" → beide varianten nodig
     "*designation*"
@@ -169,6 +170,7 @@ $WhitelistPatterns = @(
     "*assemblee generale*"       # FR zonder accenten (fallback)
     "*algemene vergadering*"     # NL: goedkeuring agenda AV intercommunale
     "*agendapunt*"               # besprekingsdocumenten per agendapunt (≠ droge agenda-lijst)
+    "*vlaanderen*"               # West-Vlaanderen, Oost-Vlaanderen, etc. (bevat "laan")
 )
 # ---------------------------------------------------------------------------
 
