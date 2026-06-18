@@ -106,6 +106,11 @@ GEMEENTEN: dict[str, dict] = {
         "naam": "Laakdal",
         "listing_pad": "/notulen-gemeenteraad",
     },
+    "etterbeek.brussels": {
+        "naam": "Etterbeek",
+        # Alle PV/notulen-PDFs staan direct op de listingpagina
+        "listing_pad": "/nl/publications/conseil-communal",
+    },
     "www.destelbergen.be": {
         "naam": "Destelbergen",
         "listing_pad": (
@@ -194,6 +199,26 @@ GEMEENTEN: dict[str, dict] = {
         "listing_pad": "/fr/conseil/pvcra",
         # PDFs op pad /conseillers/doc/pva/YYYYMMDD.pdf (Drupal 7, niet /sites/*/files/)
         "pdf_re": re.compile(r"/conseillers/doc/pva/\d{8}\.pdf", re.IGNORECASE),
+    },
+    "www.flobecq.be": {
+        "naam": "Flobecq",
+        "listing_pad": "/section/369/proces-verbaux",
+        # Hoofdpagina toont jaar-tegels -> sessie-detailpagina's -> PDF-veld
+        "jaar_re": re.compile(r"/section/\d+/proces-verbaux-\d{4}$"),
+        "vergadering_re": re.compile(r"^/pv-du-conseil-communal/"),
+    },
+    "www.glabbeek.be": {
+        "naam": "Glabbeek",
+        "listing_pad": "/archief-gemeenteraad",
+        # Archief toont jaar-links -> jaar-pagina's met /file/download/-links (Icordis CMS)
+        "jaar_re": re.compile(r"/verslagen-gemeenteraad-\d{4}$"),
+        "pdf_re": re.compile(r"/file/download/", re.IGNORECASE),
+    },
+    "www.hannut.be": {
+        "naam": "Hannut",
+        "listing_pad": "/autorites-communales/conseil-communal/",
+        # Divi/WP site; PV-links: /download/proces-verbal-N/?tmstv=... (geen datum in URL)
+        "pdf_re": re.compile(r"/download/proces-verbal-\d+/", re.IGNORECASE),
     },
 }
 
@@ -426,7 +451,7 @@ def scrape_gemeente(
             paginas: list[tuple[str, str]] = []
 
             if jaar_re:
-                # Listing -> jaarpagina's -> PDFs
+                # Listing -> jaarpagina's -> (vergaderingen ->) PDFs
                 soup = BeautifulSoup(html, "lxml")
                 jaar_urls: list[str] = []
                 gezien: set[str] = set()
@@ -439,10 +464,23 @@ def scrape_gemeente(
                         if m and int(m.group(1)) >= grensdatum.year:
                             gezien.add(pad)
                             jaar_urls.append(_absolute(href) if not href.startswith("http") else href)
+                jaar_htmls: list[tuple[str, str]] = []
                 for jaar_url in jaar_urls:
                     r = _get(jaar_url)
                     if r and r.status_code == 200:
-                        paginas.append((r.text, jaar_url))
+                        jaar_htmls.append((r.text, jaar_url))
+                if vergadering_re:
+                    # Drie niveaus: listing -> jaar -> vergadering -> PDFs
+                    gezien_verg: set[str] = set()
+                    for jaar_html, _ in jaar_htmls:
+                        for verg_url in _vergadering_links_van_html(jaar_html, vergadering_re):
+                            if verg_url not in gezien_verg:
+                                gezien_verg.add(verg_url)
+                                r = _get(verg_url)
+                                if r and r.status_code == 200:
+                                    paginas.append((r.text, verg_url))
+                else:
+                    paginas = jaar_htmls
             elif vergadering_re:
                 # Listing -> vergadering-detailpagina's -> PDFs
                 pagina_max = config.get("pagina_max", 0)
@@ -570,7 +608,7 @@ def main() -> None:
             print(f"[!] Geen configuratie gevonden voor {netloc}")
             sys.exit(1)
         te_verwerken = [conf]
-        init_session(args.base_url)
+        init_session(f"https://{netloc}")
     elif args.gemeente:
         zoek = args.gemeente.lower().replace("-", "").replace(" ", "")
         for netloc, conf in GEMEENTEN.items():

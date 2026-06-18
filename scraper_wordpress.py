@@ -57,6 +57,7 @@ BASE_URL = ""
 # extra_pdf_domeinen: extra domeinen waarvan PDF-links geaccepteerd worden
 
 _WP_PDF_RE = re.compile(r"/wp-content/uploads/.*\.pdf", re.IGNORECASE)
+_GANSHOREN_PDF_RE = re.compile(r"/content/uploads/.*\.pdf", re.IGNORECASE)
 _ST_VITH_PDF_RE = re.compile(r"/de/buergerservice-politik/.*\.pdf", re.IGNORECASE)
 _ST_VITH_JAAR_RE = re.compile(r"protokolle/(\d{4})$")
 _WOLUWE_PDF_RE = re.compile(r"/app/uploads/.*\.pdf", re.IGNORECASE)
@@ -125,9 +126,11 @@ GEMEENTEN: dict[str, dict] = {
     },
     "www.raeren.be": {
         "naam": "Raeren",
-        "listing_pad": "/gemeinderat",
+        "listing_pad": "/politik-und-buergerbeteiligung/politik/der-gemeinderat/jahresbericht/gemeinderatsprotokolle-von-2024-2030/",
+        "subfolder_crawl": True,
+        "subfolder_re": r"/gemeinderatsprotokolle-von-20\d{2}",
+        "subfolder_jaar_in_url": True,
         "extra_pdf_domeinen": ["static.raeren.be"],
-        # PDF: https://static.raeren.be/wp-content/uploads/YYYYMMDD*.pdf
     },
     "www.burg-reuland.be": {
         "naam": "Burg-Reuland",
@@ -140,8 +143,8 @@ GEMEENTEN: dict[str, dict] = {
     },
     "www.eupen.be": {
         "naam": "Eupen",
-        "listing_pad": "/politik-verwaltung/politik/stadtrat/",
-        # PDF: /wp-content/uploads/YYYY/MM/*.pdf
+        "listing_pad": "/politik-verwaltung/politik/stadtrat/stadtratssitzungen-protokolle/",
+        # PDF: /wp-content/uploads/YYYY-MM-DD-*.pdf
     },
     "www.st.vith.be": {
         "naam": "Sankt Vith",
@@ -156,11 +159,24 @@ GEMEENTEN: dict[str, dict] = {
         "pdf_re": _WOLUWE_PDF_RE,
         "datum_in_tekst": True,  # datum staat in linktekst als "du DD/MM/YY"
     },
+    "www.woluwe1200.be": {
+        "naam": "Woluwe-Saint-Lambert",
+        "listing_pad": "/proces-verbaux-du-conseil-communal/",
+        "pdf_re": _WOLUWE_PDF_RE,
+        "datum_in_tekst": True,
+    },
+    "www.ganshoren.be": {
+        "naam": "Ganshoren",
+        "listing_pad": "/politique/conseil/",
+        "pdf_re": _GANSHOREN_PDF_RE,
+        "datum_in_tekst": True,  # linktekst: "CC Notes DD.MM.YY"
+    },
     "www.amel.be": {
         "naam": "Amel",
         "listing_pad": "/archiv/protokolle",
         "pdf_re": _AMEL_PDF_RE,
         "datum_in_tekst": True,  # datum staat in linktekst als "Protokoll DD.MM.YYYY"
+        "geen_content_filter": True,  # PDF-font encoding is niet-standaard → garbled tekst; alle Protokolle zijn relevant
     },
     "buellingen.be": {
         "naam": "Büllingen",
@@ -290,14 +306,10 @@ GEMEENTEN: dict[str, dict] = {
     },
     "www.burdinne.be": {
         "naam": "Burdinne",
-        "listing_pad": "/ma-commune/vie-politique/conseil-communal/pv-du-conseil",
-        "subfolder_crawl": True,
-        # Jaarsubfolders: pv-2026, pv-2025, pv-2024-1 (slug niet altijd = jaar!)
-        "subfolder_re": r"/pv-du-conseil/pv-20\d{2}(-\d+)?$",
-        "subfolder_jaar_in_url": True,
-        "subfolder_jaar_re": r"pv-(20\d{2})",  # jaar zit VOOR de eventuele -N suffix
-        "plone_folder_listing": True,   # links eindigen op .pdf/view → strip /view
-        "datum_in_tekst": True,         # "PV CC 27.01.26" → DD.MM.YY in linktekst
+        "letsgocity": True,
+        "portal": "burdinne",
+        # Aparte pagina per jaar: /burdinne/information/pv-{year}
+        "pv_slug_years": "pv-{year}",
     },
     "www.crisnee.be": {
         "naam": "Crisnée",
@@ -311,19 +323,36 @@ GEMEENTEN: dict[str, dict] = {
         "listing_pad": "/proces-verbaux-des-seances-du-conseil/",
         "datum_in_tekst": True,         # "28 janvier 2026" in linktekst
     },
+    "www.ramillies.be": {
+        "naam": "Ramillies",
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/publications/proces-verbaux-des-conseils-communaux",
+        "pdf_re": r"/ma-commune/vie-politique/conseil-communal/publications/proces-verbaux-des-conseils-communaux/.*\.pdf",
+        "datum_in_tekst": True,
+    },
+    "www.perwez.be": {
+        "naam": "Perwez",
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux-page",
+        "pdf_re": r"/ma-commune/vie-politique/conseil-communal/proces-verbaux-page/.*\.pdf",
+        "datum_in_tekst": True,
+    },
+    "www.musson.be": {
+        "naam": "Musson",
+        "listing_pad": "/ma-commune/valves-communales/ordre-du-jour-et-proces-verbaux-du-conseil-communal",
+        "pdf_re": r"/ma-commune/valves-communales/.*pv-seance\.pdf",
+        "datum_in_tekst": True,
+    },
     "montdelenclus.be": {
         "naam": "Mont-de-l'Enclus",
-        "listing_pad": "/commune/politique/conseil-communal/proces-verbal/",
-        "pdf_re": r"/webbbcontent/uploads/.*\.pdf",
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal",
+        "pdf_re": r"/ma-commune/vie-politique/conseil-communal/.*\.pdf",
         "ssl_verify": False,            # www.montdelenclus.be heeft ongeldig SSL-cert
-        "datum_in_tekst": True,         # "Proces verbal 29 janvier 2026" in linktekst
+        "datum_in_tekst": True,
     },
     "www.orp-jauche.be": {
         "naam": "Orp-Jauche",
-        "listing_pad": "/proces-verbaux-conseil-communal/",
-        "gebruik_playwright": True,     # Elementor-accordion, JS-rendered content
-        "pdf_re": _ORP_JAUCHE_PDF_RE,
-        "datum_in_tekst": True,         # "28 JANVIER 2025" in knoptekst
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux",
+        "pdf_re": r"/ma-commune/vie-politique/conseil-communal/proces-verbaux/.*\.pdf",
+        "datum_in_tekst": True,
     },
     "www.trooz.be": {
         "naam": "Trooz",
@@ -351,6 +380,19 @@ GEMEENTEN: dict[str, dict] = {
         "portal": "courcelles-eu",
         "pv_slug": "proces-verbaux",
     },
+    "www.plombieres.be": {
+        "naam": "Plombières",
+        "letsgocity": True,
+        "portal": "plombieres",
+        "pv_slug": "proces-verbaux-des-seances-du-conseil-communal",
+    },
+    "www.bievre.be": {
+        "naam": "Bièvre",
+        "letsgocity": True,
+        "portal": "bievre",
+        # Alle jaren staan op één pagina (naam is historisch, bevat PVs t/m heden)
+        "pv_slug": "ordres-du-jour-et-proces-verbaux-de-l-annee-2021",
+    },
     "www.pontacelles.be": {
         "naam": "Pont-à-Celles",
         "listing_pad": "/services/le-conseil-communal/proces-verbaux/",
@@ -371,6 +413,26 @@ GEMEENTEN: dict[str, dict] = {
         "listing_pad": "/bienvenue-a-marchin/conseil-communal/pv-du-conseil-communal/",
         "wppdfemb": True,       # PDF ingebed via wppdfemb iframe met base64-encoded JSON
         "post_re": r"https://marchin\.be/pv-[^/]+/",
+    },
+    "www.esneux.be": {
+        "naam": "Esneux",
+        # Directe PDF-links op één listingpagina; datum in linktekst (Frans)
+        "listing_pad": "/vie-politique/conseil-communal/proces-verbaux.html?lg=FR",
+        "datum_in_tekst": True,
+        "pdf_re": r"/uploads/files/pdffiles/.*\.pdf",
+    },
+    "www.herve.be": {
+        "naam": "Herve",
+        "letsgocity": True,
+        "portal": "herve",
+        "pv_slug": "proces-verbal-du-cc",
+    },
+    "www.messancy.be": {
+        "naam": "Messancy",
+        "letsgocity": True,
+        "portal": "messancy",
+        # PVs per jaar: /messancy/information/{year} → content/{year}
+        "pv_slug_years": "{year}",
     },
 }
 
@@ -628,6 +690,15 @@ def datum_uit_pad(pad: str) -> date | None:
         except ValueError:
             pass
 
+    # Bestandsnaam: YYMMDD als aaneengesloten 6-cijferblok (bijv. protokoll_260421.pdf, Amel)
+    # Negatief lookahead/behind om geen deel van een 8-cijferblok (YYYYMMDD) te matchen.
+    m = re.search(r"(?<!\d)(\d{2})(0[1-9]|1[0-2])([0-2]\d|3[01])(?!\d)", pad)
+    if m:
+        try:
+            return date(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+
     return None
 
 
@@ -653,6 +724,13 @@ def datum_uit_linktekst(tekst: str) -> date | None:
     if m:
         try:
             return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    # Punt-notatie met 2-cijferig jaar: DD.MM.YY (bijv. Ganshoren "CC OJ 21.05.26")
+    m = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{2})(?!\d)", tekst)
+    if m:
+        try:
+            return date(2000 + int(m.group(3)), int(m.group(2)), int(m.group(1)))
         except ValueError:
             pass
     # ISO-notatie: YYYY-MM-DD (bijv. "Gemeinderatsprotokoll 2026-01-29")
@@ -856,8 +934,30 @@ def _scrape_letsgocity(config: dict, output_dir: Path, maanden: int = 12) -> tup
             return 0, 0
         alle_pdfs.extend(_lgc_pdfs_uit_content(cr.json().get("data", []), grensdatum))
 
+    elif "pv_slug_years" in config:
+        # Burdinne-stijl: aparte pagina per jaar met slug-template "{prefix}{year}"
+        # Haalt alleen jaren op vanaf grensdatum.year t/m huidig jaar.
+        template = config["pv_slug_years"]
+        for year in range(grensdatum.year, date.today().year + 1):
+            slug = template.format(year=year)
+            content_url = (
+                f"{_LGC_MAPI}/core-content-service/api/v1/web/portal"
+                f"/{portal}/content/{slug}?env=desktop&maps=false"
+            )
+            try:
+                cr = _req.get(content_url, timeout=30)
+                if cr.status_code == 404:
+                    continue
+                cr.raise_for_status()
+            except Exception as exc:
+                logger.warning("Kon inhoud niet ophalen (%s): %s", slug, exc)
+                continue
+            alle_pdfs.extend(
+                _lgc_pdfs_uit_content(cr.json().get("data", []), grensdatum, str(year))
+            )
+
     else:
-        logger.error("LetsGoCity-config vereist 'pv_menu_uid' of 'pv_slug'")
+        logger.error("LetsGoCity-config vereist 'pv_menu_uid', 'pv_slug' of 'pv_slug_years'")
         return 0, 0
 
     logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
@@ -1067,6 +1167,11 @@ def scrape_gemeente(
 
     logger.info("   %d PDF(s) gevonden", len(alle_pdfs))
 
+    import copy as _copy
+    dl_config = _copy.copy(_config)
+    if config.get("geen_content_filter"):
+        dl_config.content_filter = False
+
     alle_resultaten: list[DownloadResult] = []
     for pdf in alle_pdfs:
         datum_str = pdf.get("datum", "")
@@ -1076,7 +1181,7 @@ def scrape_gemeente(
             bestandsnaam += ".pdf"
         hint = sanitize_filename(f"{datum_str}_{bestandsnaam}" if datum_str else bestandsnaam)
         result = download_document(
-            SESSION, _config,
+            SESSION, dl_config,
             pdf["url"],
             gem_dir,
             filename_hint=hint or pdf["naam"],

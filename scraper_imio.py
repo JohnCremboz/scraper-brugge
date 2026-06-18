@@ -70,6 +70,9 @@ _JAAR_IN_URL_RE = re.compile(r"/(?:[a-z-]*?)?(20\d{2})(?:-\d+)?/?$", re.IGNORECA
 # Plone faceted query URL-suffix
 _FACETED_QUERY_SUFFIX = "/@@faceted_query"
 
+# Andenne-stijl zitting query-params: y=2025&d=01-27 (maand-dag), toegepast op urlparse().query
+_ANDENNE_ZITTING_RE = re.compile(r"(?:^|&)y=(20\d{2})&d=(\d{2})-(\d{2})")
+
 # Datum uit linktekst: bijv. "19 janvier 2026", "PV 2 mars 2026", "16 février 2026 135.5 KB"
 _DATUM_TEKST_RE = re.compile(
     r"(\d{1,2})\s+(" + "|".join(_FR_MAANDEN) + r")\s+(20\d{2})",
@@ -101,10 +104,6 @@ GEMEENTEN: dict[str, dict] = {
         "listing_pad": "/ma-commune/vie-politique/conseil-communal/pv-du-conseil",
     },
     # --- Verplaatst van deliberations.be naar eigen iMio-site ---
-    "www.andenne.be": {
-        "naam": "Andenne",
-        "listing_pad": "/conseil-communal/proces-verbaux",
-    },
     "www.arlon.be": {
         "naam": "Arlon",
         "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux",
@@ -119,7 +118,11 @@ GEMEENTEN: dict[str, dict] = {
     },
     "www.daverdisse.be": {
         "naam": "Daverdisse",
-        "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux",
+        # Jaarsubmappen: /compte-rendu-des-seances/2025, /2026, /2024-1, ...
+        # PDFs eindigen op .pdf/view (Plone)
+        "listing_pad": "/ma-commune/vie-politique/conseil-communal/compte-rendu-des-seances",
+        "subpaginas": True,
+        "plone_folder_listing": True,
     },
     "www.estinnes.be": {
         "naam": "Estinnes",
@@ -140,6 +143,7 @@ GEMEENTEN: dict[str, dict] = {
     "www.heron.be": {
         "naam": "Héron",
         "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux",
+        "ajax_load": True,
     },
     "www.honnelles.be": {
         "naam": "Honnelles",
@@ -298,6 +302,13 @@ GEMEENTEN: dict[str, dict] = {
         # Structuur A: jaar-subpagina's (conseils-YYYY / conseils-communaux-YYYY); .pdf/view-suffix;
         # datum via linktekst DD-MM-YYYY (bijv. "CC 27-01-2025")
         "listing_pad": "/ma-commune/vie-politique/conseil-communal/proces-verbaux",
+        "plone_folder_listing": True,
+    },
+    "www.aywaille.be": {
+        "naam": "Aywaille",
+        # Structuur A: jaar-subpagina's /YYYY; .pdf/view-suffix;
+        # datum via bestandsnaam (bijv. pv-conseil-communal-du-30-01-2025.pdf)
+        "listing_pad": "/fr/ma-commune/vie-politique/conseil-communal/proces-verbaux-des-seances-du-conseil",
         "plone_folder_listing": True,
     },
     "www.villedespa.be": {
@@ -582,6 +593,43 @@ def _haal_subpagina_zitting_urls(listing_pad: str, grensdatum: date) -> list[str
     return zitting_urls
 
 
+def _haal_query_zitting_urls(listing_pad: str, zitting_pad: str, grensdatum: date) -> list[tuple[str, date]]:
+    """
+    Structuur E: zittingen als query-parameter URLs op een listing pagina (Andenne).
+    Verwacht links met patroon: {zitting_pad}?y=YYYY&d=MM-DD
+    Geeft lijst van (url, datum)-tuples terug met datum >= grensdatum.
+    """
+    index_url = _absolute(listing_pad)
+    resp = _get(index_url)
+    if not resp or resp.status_code != 200:
+        return []
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    resultaat: list[tuple[str, date]] = []
+    seen: set[str] = set()
+
+    for a in soup.find_all("a", href=True):
+        full = _absolute(a["href"])
+        parsed = urlparse(full)
+        if parsed.path.rstrip("/") != zitting_pad:
+            continue
+        m = _ANDENNE_ZITTING_RE.search(parsed.query)
+        if not m:
+            continue
+        try:
+            d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+        if d < grensdatum:
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        resultaat.append((full, d))
+
+    return resultaat
+
+
 def scrape_gemeente(
     config: dict,
     output_dir: Path,
@@ -620,6 +668,27 @@ def scrape_gemeente(
                         datum = _datum_uit_tekst(pdf["naam"])
                     if datum is not None and datum < grensdatum:
                         continue
+                    alle_pdfs.append(pdf)
+        if not alle_pdfs:
+            logger.info("   Geen PDF's gevonden voor %s", naam)
+            return 0, 0
+
+    # Structuur E: query-parameter zitting-URLs (Andenne)
+    elif config.get("query_zittingen"):
+        zitting_tuples = _haal_query_zitting_urls(
+            config["listing_pad"], config["zitting_pad"], grensdatum
+        )
+        alle_pdfs = []
+        gezien_urls = set()
+        for zitting_url, datum in zitting_tuples:
+            r = _get(zitting_url)
+            if not r or r.status_code != 200:
+                continue
+            for pdf in _pdfs_van_pagina(r.text, zitting_url):
+                if pdf["url"] not in gezien_urls:
+                    gezien_urls.add(pdf["url"])
+                    doc_naam = pdf["naam"] or Path(urlparse(pdf["url"]).path).stem
+                    pdf["naam"] = f"{datum.isoformat()}_{doc_naam}"
                     alle_pdfs.append(pdf)
         if not alle_pdfs:
             logger.info("   Geen PDF's gevonden voor %s", naam)

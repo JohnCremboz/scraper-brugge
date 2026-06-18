@@ -22,7 +22,7 @@ $Blacklist = @(
     # ".html"  # scrapepagina's zonder documentwaarde
     # ".json"  # scraper metadata
     # ".zip"   # archieven
-    ".docx"  # Word-documenten
+    # ".docx"  # Word-documenten — bewust uitgezet: iDélibé-gemeenten leveren notes de synthèse als DOCX
     ".msg"
     ".jpg"
     ".jpeg"
@@ -33,14 +33,121 @@ $Blacklist = @(
 
 # Naampatronen (hoofdletterongevoelig, wildcards toegestaan)
 $BlacklistPatterns = @(
-    "*meerjarenplan*"    # meerjarenplannen
+    "*meerjarenplan*"                  # meerjarenplannen (NL)
+    "*strategique transversal*"        # Programme/Plan Stratégique Transversal (FR: MJP-equivalent)
+    "*stratégique transversal*"        # idem met accent
+    "*PST*"                            # PST-afkorting (Programme Stratégique Transversal)
+    "*materiel roulant*"               # FR: voertuigen/rollend materieel
+    "*matériel roulant*"               # idem met accent
+    "*dotation*"                       # FR: gemeentelijke bijdrage aan politie-/brandweerzone, CPAS
+    "*entretien*"                      # FR: onderhoudsopdrachten (wegen, gebouwen, voertuigen, riolen)
+    "*contrat*"                        # FR: beheers-/huur-/dienstencontracten (designation/représentant beschermd via whitelist)
+    "*convention*"                     # FR: samenwerkings-/bezettings-/dienstenconventies (delegation/représentant beschermd via whitelist)
+    "*marche public*"                  # FR: overheidsopdrachten
+    "*marché public*"                  # idem met accent
+    "*marches publics*"                # FR meervoud
+    "*marchés publics*"                # idem met accent
+    "*marche conjoint*"                # FR: gezamenlijke overheidsopdracht
+    "*marché conjoint*"                # idem met accent
+    "*batiment*"                       # FR: patrimonium/gebouwbeheer (bâtiment communal/public)
+    "*bâtiment*"                       # idem met accent
+    "*cimetiere*"                      # FR: kerkhofbeheer (grafconcessies, hernemingen)
+    "*cimetière*"                      # idem met accent
+    "*reparation*"                     # FR: herstellingen (wegen, daken, voertuigen)
+    "*réparation*"                     # idem met accent
+    "*etude*"                          # FR: technische/infrastructurele studies
+    "*étude*"                          # idem met accent
+    "*dechet*"                         # FR: afvalbeheer (tarieven, collecte, coût-vérité)
+    "*déchet*"                         # idem met accent
+    "*personnel*"                      # FR: personeelsadministratie (statuten, barema's, aanwervingen)
+    "*fabrique*"                       # FR: kerkfabrieken (tutelle, budgetten, subsidies)
+    "*delinquance*"                    # FR: milieu-overtredingen, administratieve sancties
+    "*délinquance*"                    # idem met accent
+    "*domaine public*"                 # FR: openbaar domein (innames, redevances, overdrachten)
+    "*patrimoine*"                     # FR: patrimonium (verkopen, aankopen, overdrachten)
+    "*bilan*"                          # FR: balansen, activiteitsverslagen, jaarrekeningen
+    "*avantage*"                       # FR: sociale voordelen (scholen, personeel)
+    "*urbanisme*"                      # FR: ruimtelijke ordening (vergunningen, schema's)
+    "*amenagement*"                    # FR: inrichting/aménagement du territoire
+    "*aménagement*"                    # idem met accent
+    "*acquisition*"                    # FR: aankopen (voertuigen, machines, percelen)
+    "*immersion*"                      # FR: taalimmersie-onderwijs + overstromingszones (ZIT)
+    "*subside*"                        # FR: subsidies aan vzw's/sport/cultuur
+    "*subvention*"                     # FR: idem (alternatieve schrijfwijze)
+    "*redevance*"                      # FR: gemeentelijke heffingen (zalen, maaltijden, begraafplaatsen)
+    "*tax on pylons*"                  # Waals programma GSM-masten (TOP III) — financieel/infrastructuur
+    "*arrete*"                         # FR: arrêtés du bourgmestre/de police/royaux/ministériels (burgemeestersbesluiten, noodmaatregelen)
+    "*arrêté*"                         # idem met accent
+    "*population*"                     # FR: bevolkingsstatistieken, schoolpopulatie, bevolkingsregisterdienst
+    "*interpellation citoyenne*"       # FR: burgervragen aan de gemeenteraad — geen mandaatbeslissing
+    "*sanctionerend ambtenaar*"        # NL: GAS-handhaving — interne aanstelling, geen extern mandaat
+    "*fonctionnaire sanctionnateur*"   # FR: idem (m)
+    "*fonctionnaire sanctionnatrice*"  # FR: idem (f)
+    "*sterilisatie*"                   # NL: dierenwelzijn/medisch — nooit mandaatrelevant
+    "*sterilisation*"                  # FR: idem (zonder accent)
+    "*stérilisation*"                  # FR: idem met accent
+    "*handycity*"                      # inclusie-charter personen met handicap
+    "*auditcharter*"                   # intern auditframework
+    "*charte IA*"                      # AI-gebruiksbeleid
+    "*charte informatique*"            # IT-gebruiksbeleid
+    "*charte de déontologie*"          # deontologiecharter gemeenteraad
+    "*charte de deontologie*"          # idem zonder accent
+    "*charte PEFC*"                    # bosbeheercertificering
+    "*charte de nourrissage*"          # katten voederbeleid
+    "*intelligence artificielle*"      # AI-charters en -beleid
+    "*droit de chasse*"                # FR: jachtrecht — patrimonium
+    "*location de chasse*"             # FR: jachtverhuur
+    "*location des chasses*"           # FR: idem meervoud
+    "*baux de chasse*"                 # FR: jachtpachten
+    "*bail de chasse*"                 # FR: jachtpacht (enkelvoud)
+    "*devis forestier*"                # FR: bosbeheercijfers/ramingen
+    "*regime forestier*"               # FR: bosbeheersregime
+    "*régime forestier*"               # FR: idem met accent
+    "*parcelle forestiere*"            # FR: bosgrondperceel
+    "*parcelle forestière*"            # FR: idem met accent
+    "*parcelles forestieres*"          # FR: meervoud
+    "*parcelles forestières*"          # FR: meervoud met accent
+    "*chemin forestier*"               # FR: boswegen
+    "*camera*"                         # NL/FR: bewakingscamera's, ANPR, cameratoezicht — ordehandhaving
+    "*caméra*"                         # FR: idem met accent
+    "*kerkfabriek*"                    # NL: kerkfabrieken — pendant van FR *fabrique*
+    "*technische dienst*"              # NL: operationele beslissingen technische dienst
+    "*financiele dienst*"              # NL: financiële dienst — budgetten, leningen, belastingen
+    "*financiële dienst*"              # NL: idem met accent
+    "*vrije tijd*"                     # NL: vrijetijdsdienst — commissie/samenstelling beschermd via whitelist
+    "*circulation*"                    # FR: verkeersreglementering — designation/commissie beschermd via whitelist
+    "*braderie*"                       # NL/FR: koopjesmarkt/braderie — nooit mandaatrelevant
+    "*feest*"                          # NL: feesten — samenstelling/aanstelling beschermd via whitelist
+    "*fete*"                           # FR: fête (zonder accent) — designation/demission beschermd via whitelist
+    "*fête*"                           # FR: fête (met accent)
+    "*viering*"                        # NL: vieringen, huldigingen — nooit mandaatrelevant
+    "*principebeslissing*"             # NL: principebeslissingen — samenwerkingsverbanden beschermd via whitelist
+    "*modification budgetaire*"        # FR: begrotingswijzigingen — puur financieel
+    "*modification budgétaire*"        # FR: idem met accent
+    "*modifications budgetaires*"      # FR: meervoud
+    "*modifications budgétaires*"      # FR: meervoud met accent
+    "motion *"                         # FR: politieke motie (prefix) — niet "promotion"
+    "* motion *"                       # FR: motie midden in naam
+    "* motion"                         # FR: motie op einde naam
     "*reglement*"        # reglementen (NL/DE)
     "*règlement*"        # reglementen (FR)
-    "*jaarrekening*"     # jaarrekeningen (NL)
-    "*comptes annuels*"  # jaarrekeningen (FR)
-    "*jahresrechnung*"   # jaarrekeningen (DE)
+    "*jaarrekening*"                   # jaarrekeningen (NL)
+    "*comptes annuels*"                # jaarrekeningen (FR)
+    "*jahresrechnung*"                 # jaarrekeningen (DE)
+    "*opcentiemen*"                    # NL: belastingaanslagvoeten onroerende voorheffing — puur fiscaal
+    "*centimes additionnels*"          # FR: idem (centimes additionnels au précompte immobilier)
     "*retributie*"       # retributies
     "*signalisatie*"     # signalisatieplannen
+    "*parkeer*"          # parkeerreglementen/-verordeningen
+    "*kermis*"           # kermisvergunningen/-verordeningen
+    "*kermesse*"         # kermesse (FR)
+    "*vergunning*"       # alle soorten vergunningen (evenementen, horecavergunningen, stedenbouw)
+    "*seingever*"        # seingevers bij wieler-/wandelevenementen
+    "WW *"               # wielerwedstrijd-dossiers (prefix)
+    "WW_*"               # wielerwedstrijd-dossiers (prefix met underscore)
+    "*baan*"             # wegbenaming (Koninklijke Baan, rijbaan, ...)
+    "*wegen*"            # weginfrastructuur (zaak van de wegen, wegen- en rioleringswerken)
+    "*protocol*"         # samenwerkings-/GAS-/GDPR-protocollen (excl. Protokoll: Duits)
     "*dagorde*"          # dagorden
     "*agenda*"           # agenda-lijsten van vergaderingen (≠ agendapunt: zie whitelist)
     "*begroting*"        # begrotingen
@@ -139,6 +246,13 @@ $BlacklistPatterns = @(
     "*place*"
     "*rue*"
     "*boulevard*"
+    "*comptes annuels*"  # jaarrekeningen FR (al aanwezig, redundant maar expliciet)
+    "comptes *"          # comptes CPAS, comptes zone, comptes fabrique, … (prefix)
+    "compte *"           # compte exercice, compte fabrique, … (prefix singulier)
+    "* comptes *"        # midden in bestandsnaam
+    "* compte *"         # midden in bestandsnaam singulier
+    "* comptes"          # bestandsnaam eindigt op comptes
+    "* compte"           # bestandsnaam eindigt op compte
 )
 
 # Whitelist - bestandsnamen met deze woorden worden NOOIT verwijderd,
@@ -163,9 +277,18 @@ $WhitelistPatterns = @(
     "*nomination*"         # nomination administrateur/membre
     "*remplacement*"       # remplacement du représentant → bevat "place" → KRITISCH
     "*délégué*"            # délégué à l'AV intercommunale
+    # Compte-rendu (vergaderverslagen) — worden NIET gefilterd ondanks *compte* blacklist
+    "*compte-rendu*"
+    "*compte rendu*"
+    # Désignation / nomination — aanduiding commissarissen, bestuurders (beschermt ook comptes-context)
+    "*nomination*"
+    "*désignation*"
+    "*designation*"
     # Intercommunale AV-beslissingen
     "*avis*intercommunale*"      # gemeentelijke standpuntname bij AV intercommunale
     "*assemblée générale*"       # FR: approbation OJ intercommunale AV (VIVALIA, IDELUX, ORES,...)
+    "*commissie*"                # NL: raadscommissies — samenstelling altijd mandaatrelevant
+    "*samenstelling*"            # NL: samenstelling van een raad/bestuur/commissie
     "*assemblee generale*"       # FR zonder accenten (fallback)
     "*algemene vergadering*"     # NL: goedkeuring agenda AV intercommunale
     "*agendapunt*"               # besprekingsdocumenten per agendapunt (≠ droge agenda-lijst)

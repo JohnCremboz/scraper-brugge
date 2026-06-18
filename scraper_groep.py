@@ -42,6 +42,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -187,6 +188,7 @@ TYPES: dict[str, dict] = {
         "scraper": "scraper_deliberations.py",
         "heeft_browser": False,
         "heeft_agendapunten": True,
+        "heeft_organen": False,
         "kleur": "bright_magenta",
     },
     "irisnet": {
@@ -195,6 +197,7 @@ TYPES: dict[str, dict] = {
         "scraper": "scraper_irisnet.py",
         "heeft_browser": False,
         "heeft_agendapunten": False,
+        "heeft_organen": False,
         "kleur": "bright_yellow",
     },
     "brussel": {
@@ -283,6 +286,7 @@ TYPES: dict[str, dict] = {
         "scraper": "scraper_idelibe.py",
         "heeft_browser": False,
         "heeft_agendapunten": False,
+        "heeft_organen": False,
         "kleur": "bright_cyan",
     },
     "pubcon": {
@@ -343,20 +347,21 @@ STIJL = Style([
 # ---------------------------------------------------------------------------
 # iMio/Plone gemeenten — scraper_imio.py via hostname
 _IMIO_HOSTS: frozenset[str] = frozenset({
-    "www.viroinval.be", "www.couvin.be", "www.herstal.be", "www.burdinne.be",
+    "www.viroinval.be", "www.couvin.be", "www.herstal.be",
     "www.andenne.be", "www.arlon.be", "www.blegny.be", "www.chaumont-gistoux.be",
     "www.daverdisse.be", "www.estinnes.be", "www.froidchapelle.be", "www.gerpinnes.be",
-    "www.grace-hollogne.be", "www.heron.be", "www.honnelles.be", "www.jalhay.be",
-    "www.jurbise.be", "www.meix-devant-virton.be", "www.mettet.be", "www.paliseul.be",
+    "www.grace-hollogne.be", "www.honnelles.be", "www.jalhay.be",
+    "www.jurbise.be", "www.meix-devant-virton.be", "www.paliseul.be",
     "www.philippeville.be", "www.quaregnon.be", "www.saint-ghislain.be",
     "www.thimister-clermont.be", "www.thuin.be", "www.wasseiges.be",
     "www.clavier.be", "www.braine-lalleud.be", "www.villedefontaine.be",
     "www.lahulpe.be", "www.manage-commune.be", "www.bouillon.be", "www.ciney.be",
     "www.donceel.be", "www.villers-la-ville.be",
-    "www.beaumont.be", "www.cerfontaine.be", "www.ecaussinnes.be", "www.estaimpuis.be",
+    "www.beaumont.be", "www.ecaussinnes.be", "www.estaimpuis.be",
     "www.onhaye.be", "www.saint-hubert.be", "www.sivry-rance.be",
     "www.lessines.be", "www.leroeulx.be", "www.attert.be", "www.beauraing.be",
     "www.villedecomines-warneton.be", "www.profondeville.be", "www.villedespa.be",
+    "www.aywaille.be",
 })
 
 # Waalse WordPress/Plone-gemeenten — scraper_wordpress.py via hostname
@@ -378,6 +383,17 @@ _WAALSE_WP_HOSTS: frozenset[str] = frozenset({
     "www.province.namur.be",
     "www.courcelles.eu",
     "www.marchin.be",
+    "www.bievre.be",
+    "www.esneux.be",
+    "www.herve.be",
+    "www.messancy.be",
+    "www.musson.be",
+    "www.perwez.be",
+    "www.plombieres.be",
+    "www.ramillies.be",
+    "www.raeren.be",
+    "www.woluwe1200.be",
+    "www.ganshoren.be",
 })
 
 # iDélibé commune ID's (www.conseilcommunal.be/commune/{id})
@@ -449,7 +465,7 @@ def detecteer_type(url: str) -> str:
     # Waalse WordPress/Plone-gemeenten op hostname
     if urlparse(url).netloc.lower() in _WAALSE_WP_HOSTS:
         return "wordpress"
-    if "provincedeliege.be" in u:
+    if "provincedeliege.be" in u or "etterbeek.brussels" in u or "flobecq.be" in u or "glabbeek.be" in u or "hannut.be" in u:
         return "drupal"
     if re.search(r"/sites/[^/]+/files", u) or "/system/files" in u:
         return "drupal"
@@ -517,15 +533,13 @@ def groepeer(gemeenten: list[dict]) -> dict[str, list[dict]]:
 # Bouwen van subproces-commando's
 # ---------------------------------------------------------------------------
 
-def sanitize_slug(naam: str) -> str:
-    """Zet een gemeentenaam om naar een bestandssysteem-veilige mapnaam.
-    Spaties worden bewaard (Windows ondersteunt ze); enkel tekens die echt
-    onveilig zijn voor bestandssystemen worden vervangen."""
-    naam = naam.replace("/", "-").replace("\\", "-").replace(":", "-")
-    naam = naam.replace("*", "-").replace("?", "").replace('"', "")
-    naam = naam.replace("<", "").replace(">", "").replace("|", "-")
-    naam = re.sub(r"\s+", " ", naam).strip()
-    return naam[:60] or "gemeente"
+# MeetingBurger-sites waar het gemeenteraadsorgaan niet "Gemeenteraad" heet.
+# Sleutel: netloc (lowercase). Waarde: exacte orgaannaam zoals op het platform.
+_MEETINGBURGER_ORGAAN_OVERRIDE: dict[str, str] = {
+    "maldegem.meetingburger.net": "GR",
+    "schoten.meetingburger.net": "GR",
+    "wellen.meetingburger.net": "GR",
+}
 
 
 def bouw_commando(
@@ -547,13 +561,24 @@ def bouw_commando(
         return None
 
     scraper = config["scraper"]
-    slug = sanitize_slug(gemeente["gemeente"])
-    output_pad = str(Path(output_basis) / slug)
+    # scraper_ranst.py (meetingburger) maakt geen gemeente-submap zelf;
+    # alle andere scrapers doen dat wel — geef dan enkel output_basis mee.
+    if type_ == "meetingburger":
+        output_pad = str(Path(output_basis) / gemeente["gemeente"])
+    else:
+        output_pad = output_basis
 
     cmd = ["uv", "run", "python", scraper]
 
     # Normalize sentinel strings that mean "no filter" to None
     _effectief_orgaan = orgaan if orgaan and orgaan.lower() not in {"__alle__", "alle organen (geen filter)", "alle organen"} else None
+
+    # Site-specifieke orgaannaam-override voor MeetingBurger (bijv. "GR" i.p.v. "Gemeenteraad")
+    if type_ == "meetingburger":
+        _netloc = urlparse(gemeente.get("url", "")).netloc.lower()
+        _override = _MEETINGBURGER_ORGAAN_OVERRIDE.get(_netloc)
+        if _override and (_effectief_orgaan is None or _effectief_orgaan.lower() == "gemeenteraad"):
+            _effectief_orgaan = _override
 
     if type_ in {"ibabs", "idelibe"}:
         # Deze scrapers kennen geen --base-url; de gemeente wordt opgezocht via --gemeente.
@@ -1131,11 +1156,20 @@ Voorbeelden:
         return
 
     # ── Bepaal welke gemeenten te verwerken ───────────────────────────────
+    def _norm(s: str) -> str:
+        """Verwijder accenten en zet apostrof om naar koppelteken voor naam-matching."""
+        return "".join(
+            c for c in unicodedata.normalize("NFD", s.lower())
+            if unicodedata.category(c) != "Mn"
+        ).replace("'", "-")
+
     if args.gemeente:
-        naam_lower = args.gemeente.lower()
-        te_verwerken = [
+        naam_lower = _norm(args.gemeente)
+        # Exacte overeenkomst heeft prioriteit (vermijdt b.v. "Evere" → "Beveren")
+        exacte = [g for g in gemeenten if _norm(g["gemeente"]) == naam_lower]
+        te_verwerken = exacte if exacte else [
             g for g in gemeenten
-            if naam_lower in g["gemeente"].lower()
+            if naam_lower in _norm(g["gemeente"])
         ]
         if not te_verwerken:
             console.print(f"[red]Geen gemeente gevonden met naam '{args.gemeente}'.[/red]")
@@ -1159,8 +1193,15 @@ Voorbeelden:
         return
 
     if not args.orgaan and not args.alle:
-        # Types zonder orgaan-concept (bv. imio: enkel PV's) vereisen geen --orgaan/--alle
-        type_config = TYPES.get(args.type or "", {})
+        # Types zonder orgaan-concept (bv. imio, idelibe: enkel PV's) vereisen geen --orgaan/--alle.
+        # Gebruik het opgegeven --type, of detecteer het type van de eerste gevonden gemeente.
+        if args.type:
+            type_config = TYPES.get(args.type, {})
+        elif te_verwerken:
+            _detected_type = detecteer_type(te_verwerken[0].get("url", ""))
+            type_config = TYPES.get(_detected_type, {})
+        else:
+            type_config = {}
         if type_config.get("heeft_organen", True):
             console.print("[red]Geef --orgaan of --alle op.[/red]")
             sys.exit(1)

@@ -414,12 +414,9 @@ def stap_agendapunten(gemeente: dict) -> bool:
 
 
 def stap_output(gemeente: dict, orgaan: str | None) -> str:
-    slug = gemeente["gemeente"].lower().replace(" ", "_").replace("/", "_")
-    slug = slug[:30]
-    standaard = f"pdfs/{slug}"
-    if orgaan:
-        veilig = orgaan.lower().replace(" ", "_").replace("/", "_")[:20]
-        standaard = f"{standaard}/{veilig}"
+    # Alle scrapers voegen zelf een gemeente-submap toe aan output_base;
+    # geef alleen de basismap mee om dubbele nesting te voorkomen.
+    standaard = "pdfs"
 
     antwoord = questionary.text(
         "In welke map wilt u de bestanden opslaan?",

@@ -20,6 +20,11 @@ import re
 import sys
 import time
 from datetime import date, datetime, timezone
+
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -74,14 +79,16 @@ def haal_publicaties(maanden: int = 3) -> list[dict]:
 
     soup = BeautifulSoup(resp.text, "lxml")
     vandaag = date.today()
-    cutoff_ts = int(datetime(
-        vandaag.year,
-        max(1, vandaag.month - maanden),
-        1,
-        tzinfo=timezone.utc,
-    ).timestamp())
+    # Correcte maand-aftrek over jaargrenzen heen
+    cutoff_maand = vandaag.month - maanden
+    cutoff_jaar = vandaag.year
+    while cutoff_maand <= 0:
+        cutoff_maand += 12
+        cutoff_jaar -= 1
+    cutoff_ts = int(datetime(cutoff_jaar, cutoff_maand, 1, tzinfo=timezone.utc).timestamp())
 
     publicaties = []
+    geziene_urls: set[str] = set()
     for row in soup.find_all("tr"):
         xshow = row.get("x-show", "")
         if not xshow:
@@ -114,6 +121,10 @@ def haal_publicaties(maanden: int = 3) -> list[dict]:
             continue
 
         pub_url = urljoin(BASE_URL, href["href"])
+        if pub_url in geziene_urls:
+            continue
+        geziene_urls.add(pub_url)
+
         pub_datum = datetime.fromtimestamp(ts, tz=timezone.utc).date()
 
         publicaties.append({
@@ -204,6 +215,79 @@ def genereer_html(publicaties: list[dict], output_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# HTML opslaan per vergadering
+# ---------------------------------------------------------------------------
+
+_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<title>{titel}</title>
+</head>
+<body>
+{content}
+</body>
+</html>"""
+
+
+def sla_vergadering_op(publicatie: dict, output_dir: Path) -> Path | None:
+    """
+    Haalt de detailpagina op en slaat het #content-blok op als HTML-bestand.
+    Sla Agenda-publicaties over (geen inhoudelijke tekst).
+    """
+    if publicatie.get("categorie") == "Agenda":
+        return None
+
+    resp = _get(publicatie["url"])
+    if resp is None:
+        return None
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    content = soup.find(id="content")
+    if not content:
+        return None
+
+    # Datum van de pagina zelf lezen ("Zitting: dinsdag 2 juni 2026")
+    MAANDEN_NL = {
+        "jan": 1, "feb": 2, "mrt": 3, "apr": 4, "mei": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "okt": 10, "nov": 11, "dec": 12,
+    }
+    datum_iso = None
+    for h3 in soup.find_all("h3"):
+        m = re.search(
+            r"Zitting[:\s]+\w+\s+(\d{1,2})\s+(\w+)\s+(\d{4})",
+            h3.get_text(),
+            re.IGNORECASE,
+        )
+        if m:
+            dag, maand_str, jaar = int(m.group(1)), m.group(2).lower()[:3], int(m.group(3))
+            maand = MAANDEN_NL.get(maand_str)
+            if maand:
+                datum_iso = f"{jaar:04d}-{maand:02d}-{dag:02d}"
+                break
+    if not datum_iso:
+        try:
+            d = datetime.strptime(publicatie["datum"], "%d/%m/%Y")
+            datum_iso = d.strftime("%Y-%m-%d")
+        except ValueError:
+            datum_iso = publicatie["datum"].replace("/", "-")
+
+    orgaan_dir = output_dir / sanitize_filename(publicatie.get("orgaan", "Onbekend"))
+    orgaan_dir.mkdir(parents=True, exist_ok=True)
+
+    categorie = sanitize_filename(publicatie.get("categorie", "document"))
+    bestand = orgaan_dir / f"{datum_iso}_{categorie}.html"
+
+    bestand.write_text(
+        _HTML_TEMPLATE.format(titel=publicatie["titel"], content=str(content)),
+        encoding="utf-8",
+    )
+    publicatie["lokaal_bestand"] = str(bestand)
+    return bestand
+
+
+# ---------------------------------------------------------------------------
 # Hoofd scrape-functie
 # ---------------------------------------------------------------------------
 
@@ -229,11 +313,16 @@ def scrape(maanden: int = 3, output_base: str = "pdfs") -> None:
         print("  Geen publicaties gevonden.")
         return
 
-    print("[2] Details ophalen...")
-    for p in tqdm(publicaties, desc="Detail pagina's"):
+    print("[2] Details ophalen en opslaan als HTML...")
+    opgeslagen = 0
+    for p in tqdm(publicaties, desc="Vergaderingen"):
         haal_detail(p)
+        if sla_vergadering_op(p, output_dir):
+            opgeslagen += 1
 
-    print("[3] Opslaan...")
+    print(f"    ✓ {opgeslagen} HTML-bestanden opgeslagen")
+
+    print("[3] Overzicht opslaan...")
     meta_pad = output_dir / f"{sanitize_filename(NAAM)}_metadata.json"
     meta_pad.write_text(json.dumps(publicaties, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"    ✓ JSON: {meta_pad.name}")
@@ -245,6 +334,7 @@ def scrape(maanden: int = 3, output_base: str = "pdfs") -> None:
     print(f"\n{'=' * 70}")
     print(f"  ✓ Klaar!")
     print(f"  Publicaties   : {len(publicaties)}")
+    print(f"  HTML-bestanden: {opgeslagen}")
     print(f"  Agendapunten  : {totaal_aps}")
     print(f"{'=' * 70}\n")
 

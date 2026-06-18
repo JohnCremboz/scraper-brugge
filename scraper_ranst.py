@@ -306,9 +306,13 @@ def verwerk_vergadering(
 
         result = base_download_document(SESSION, _config, dl_url, bestemming, naam_hint, require_pdf=False)
         if result.success and not result.skipped:
-            print(f"      [OK] {result.path.name[:70] if result.path else naam_hint[:70]}")
+            naam = (result.path.name if result.path else naam_hint)[:70]
+            enc = sys.stdout.encoding or "utf-8"
+            print(f"      [OK] {naam}".encode(enc, errors="replace").decode(enc))
         elif not result.success:
-            print(f"      [!] Fout: {result.error}")
+            enc = sys.stdout.encoding or "utf-8"
+            err = str(result.error).encode(enc, errors="replace").decode(enc)
+            print(f"      [!] Fout: {err}")
         return result.success
 
     # Vergaderingspagina zelf + alleen gepubliceerde subpagina's uit de lijstpagina.

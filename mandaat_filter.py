@@ -115,6 +115,14 @@ MANDAAT_TERMEN: list[str] = [
     "indemnité de mandat",
     "indemnité de fonction",
 
+    # Mandataire en installatie
+    "serment",          # prestation de serment = eed/installatie burgemeester/schepenen
+    "bourgmestre",      # burgemeester (FR) — installatie/mandate
+    "échevin",          # schepen (FR) — installatie/mandate
+    "pacte de majorité",# coalitieakkoord — altijd mandaatcontext
+    "élection",         # verkiezing CPAS-raadsleden, schepenen, voorzitters
+    "démission",        # ontslag uit mandaat (conseiller/président CPAS, schepen, …)
+
     # Intercommunales wallonnes
     "ores",
     "swde",

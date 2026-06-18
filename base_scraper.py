@@ -341,10 +341,11 @@ def download_document(
     output_dir: Path,
     filename_hint: str = "",
     require_pdf: bool = True,
+    force_filename_hint: bool = False,
 ) -> DownloadResult:
     """
     Download een document naar de output-directory.
-    
+
     Args:
         session: HTTP sessie
         config: Scraper configuratie
@@ -352,7 +353,8 @@ def download_document(
         output_dir: Doelmap
         filename_hint: Suggestie voor bestandsnaam
         require_pdf: Alleen PDF's accepteren (standaard True)
-    
+        force_filename_hint: Gebruik hint als bestandsnaam i.p.v. Content-Disposition
+
     Returns:
         DownloadResult met status en pad
     """
@@ -380,16 +382,16 @@ def download_document(
 
     try:
         resp = rate_limited_get(session, full_url, config, stream=True, allow_redirects=True)
-        
+
         if resp.status_code != 200:
             return DownloadResult(
                 url=full_url,
                 success=False,
                 error=f"HTTP {resp.status_code}",
             )
-        
+
         # Bepaal bestandsnaam
-        filename = _extract_filename(resp, filename_hint, doc_url)
+        filename = filename_hint if (force_filename_hint and filename_hint) else _extract_filename(resp, filename_hint, doc_url)
 
         # Blokkeer audio/video — nooit relevant voor mandaatonderzoek
         _GEBLOKKEERDE_EXTENSIES = {".mp3", ".wav", ".mp4", ".avi", ".mkv", ".ogg", ".flac"}
@@ -529,7 +531,19 @@ def _extract_filename(
         # Standaard filename
         match = re.search(r'filename=["\']?([^"\';\n]+)', cd)
         if match:
-            return match.group(1).strip().strip('"\'')
+            cd_name = match.group(1).strip().strip('"\'')
+            # RFC2047 MIME-encoding decoderen (=?utf-8?B?...?= of =?utf-8?Q?...?=)
+            if cd_name.startswith("=?"):
+                from email.header import decode_header
+                parts = decode_header(cd_name)
+                cd_name = "".join(
+                    (s.decode(enc or "utf-8") if isinstance(s, bytes) else s)
+                    for s, enc in parts
+                )
+            # Sla puur-numerieke namen over (bv. iDélibé geeft "157177.docx")
+            # zodat de hint een betekenisvolle naam kan geven.
+            if not Path(cd_name).stem.isdigit():
+                return cd_name
     
     # 2. Gebruik hint
     if hint:

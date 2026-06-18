@@ -529,9 +529,10 @@ def activeer_orgaan_filter(page, orgaan_naam: str) -> bool:
 
 
 def navigeer_vorige_maand(page) -> str | None:
-    """Ga naar de vorige maand. Ondersteunt twee kalender-stijlen:
+    """Ga naar de vorige maand. Ondersteunt drie kalender-stijlen:
     - Klassiek (Bootstrap paginatie): li.page-item.previous a
-    - Nieuwer (tekst-link): <a href="#">vorige maand</a>  (bv. Niel)
+    - Nieuwer (tekst-link): <a href="#">vorige maand</a>
+    - Dropdown-selects: <select> voor maand + <select> voor jaar (bv. Niel)
     """
     # Strategie 1: Bootstrap-paginatie (de meeste portalen)
     try:
@@ -555,6 +556,55 @@ def navigeer_vorige_maand(page) -> str | None:
         page.wait_for_load_state("networkidle", timeout=15000)
         time.sleep(0.5)
         return huidige_maand_titel(page) or "?"
+    except Exception:
+        pass
+
+    # Strategie 3: dropdown-selects voor maand + jaar (bv. Niel)
+    try:
+        selects = page.locator("select")
+        if selects.count() >= 2:
+            maand_sel = selects.nth(0)
+            jaar_sel = selects.nth(1)
+            maand_idx = maand_sel.evaluate("el => el.selectedIndex")
+            opties_n = maand_sel.locator("option").count()
+
+            if maand_idx > 0:
+                maand_sel.evaluate(
+                    f"el => {{ el.selectedIndex = {maand_idx - 1}; "
+                    f"el.dispatchEvent(new Event('change', {{bubbles: true}})); }}"
+                )
+            else:
+                # Januari → December van vorig jaar
+                huidig_jaar = jaar_sel.evaluate(
+                    "el => el.options[el.selectedIndex].text.trim()"
+                )
+                try:
+                    vorig_jaar = str(int(huidig_jaar) - 1)
+                except ValueError:
+                    return None
+                gevonden = jaar_sel.evaluate(
+                    f"""el => {{
+                        for (let i = 0; i < el.options.length; i++) {{
+                            if (el.options[i].text.trim() === '{vorig_jaar}' ||
+                                el.options[i].value === '{vorig_jaar}') {{
+                                el.selectedIndex = i;
+                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                return true;
+                            }}
+                        }}
+                        return false;
+                    }}"""
+                )
+                if not gevonden:
+                    return None
+                maand_sel.evaluate(
+                    f"el => {{ el.selectedIndex = {opties_n - 1}; "
+                    f"el.dispatchEvent(new Event('change', {{bubbles: true}})); }}"
+                )
+
+            page.wait_for_load_state("networkidle", timeout=15000)
+            time.sleep(0.5)
+            return huidige_maand_titel(page) or "?"
     except Exception as e:
         print(f"  [!] Maandnavigatie mislukt: {e}")
     return None

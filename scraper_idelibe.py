@@ -114,6 +114,17 @@ _SKIP_KEYWORDS = (
     "invitation",
 )
 
+# Communes die per-punt bijlagen publiceren i.p.v. een sessie-niveau PV.
+# Voor deze communes worden /point/{id}/attachments opgehaald en als beslissingen opgeslagen.
+_ATTACHMENT_COMMUNES: frozenset[int] = frozenset({
+    44,   # Gedinne
+    92,   # Flobecq
+    98,   # Tenneville
+    104,  # Ouffet
+    41,   # Tintigny
+    72,   # Visé
+})
+
 SESSION: requests.Session | None = None
 _config: ScraperConfig | None = None
 _OUTPUT_ROOT = Path("pdfs")
@@ -207,10 +218,32 @@ def haal_zittingen(commune_id: int) -> list[dict]:
         return []
 
 
+def _datum_uit_punt(p: dict) -> "date | None":
+    """Extraheer datum uit een punt-dict via SeanceDate."""
+    seance_date = p.get("SeanceDate")
+    if seance_date:
+        try:
+            return datetime.fromisoformat(seance_date).date()
+        except ValueError:
+            pass
+    return None
+
+
+def haal_bijlagen_van_punt(point_id: int) -> list[dict]:
+    """Haal bijlagen op voor een agendapunt via /point/{id}/attachments."""
+    r = _get(f"/point/{point_id}/attachments")
+    if r is None:
+        return []
+    try:
+        return r.json().get("Data", []) or []
+    except Exception:
+        return []
+
+
 def haal_documenten_van_zitting(commune_id: int, zitting_id: int) -> list[dict]:
     """
     Haal PV/note-documenten op voor een zitting.
-    Geeft lijst van {id, naam, bestandsnaam, datum}.
+    Geeft lijst van {point_id, naam, bestandsnaam, datum}.
     """
     r = _get(f"/commune/{commune_id}/seance/{zitting_id}")
     if r is None:
@@ -223,31 +256,45 @@ def haal_documenten_van_zitting(commune_id: int, zitting_id: int) -> list[dict]:
 
     punten = data.get("Points", [])
     docs = []
+
+    # Sessie-niveau documenten (isFile=True op het punt zelf)
     for p in punten:
         if not p.get("isFile"):
             continue
-
         titre = p.get("Titre") or ""
         fname = p.get("FileName") or ""
-
         if not _is_besluit(titre, fname):
             continue
-
-        # Datum uit SeanceDate veld (ISO string "2025-12-29T20:00:00")
-        datum = None
-        seance_date = p.get("SeanceDate")
-        if seance_date:
-            try:
-                datum = datetime.fromisoformat(seance_date).date()
-            except ValueError:
-                pass
-
         docs.append({
             "point_id": p["Id"],
             "naam": titre or Path(fname).stem,
             "bestandsnaam": fname,
-            "datum": datum,
+            "datum": _datum_uit_punt(p),
         })
+
+    # Per-punt bijlagen voor communes die geen sessie-niveau PV publiceren
+    if commune_id in _ATTACHMENT_COMMUNES:
+        for p in punten:
+            if p.get("isFile"):
+                continue  # al verwerkt hierboven
+            punt_datum = _datum_uit_punt(p)
+            punt_titel = p.get("Titre") or ""
+            bijlagen = haal_bijlagen_van_punt(p["Id"])
+            for b in bijlagen:
+                if not b.get("isFile"):
+                    continue
+                fname = b.get("FileName") or "beslissing.pdf"
+                # Gebruik de punttitel als documentnaam zodat de mandaatfilter
+                # de inhoud kan beoordelen op basis van de agendapunttekst
+                naam = punt_titel or b.get("Titre") or Path(fname).stem
+                docs.append({
+                    "point_id": b["Id"],
+                    "naam": naam,
+                    "bestandsnaam": fname,
+                    "datum": punt_datum,
+                    "force_naam": True,
+                })
+
     return docs
 
 
@@ -301,6 +348,7 @@ def scrape_gemeente(commune_id: int, naam: str, maanden: int = 12,
             gem_dir,
             filename_hint=doc_naam,
             require_pdf=False,   # ook DOCX accepteren
+            force_filename_hint=d.get("force_naam", False),
         )
         resultaten.append(result)
 

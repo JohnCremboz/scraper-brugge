@@ -32,12 +32,14 @@ uv run python scraper_groep.py --toon-groepen
 **Central data source:** `simba-source.csv` — 575 rows (10 provinces + 565 municipalities) with URLs. `scraper_groep.py` reads this CSV and dispatches to individual scrapers via `detecteer_type()` (URL → scraper type mapping).
 
 **Scraper hierarchy:**
+
 - `start.py` — interactive TUI entry point, wraps `scraper_groep.py`
 - `scraper_groep.py` — batch orchestrator; calls individual scrapers as subprocesses; also handles type detection from URL patterns
 - `scraper.py` — dedicated Brugge scraper (Playwright, SmartCities)
 - `scraper_*.py` — 22 individual scrapers, one per website platform
 
 **Base layer** (`base_scraper.py`):
+
 - `ScraperConfig` dataclass — all tunable params (timeouts, parallelism, rate limiting)
 - `create_session()` + `rate_limited_get()` — HTTP with retry (3×, exponential backoff) and rate limiting (200ms min between requests)
 - `robust_get()` — simpler retry wrapper returning `None` on permanent failure
@@ -75,6 +77,28 @@ uv run python scraper_groep.py --toon-groepen
 - **Publicatiemodellen:** twee types — (1) volledig document per vergadering (notulen/PV als PDF) of (2) beslissing per beslissing (Vlaams: **uittreksels**; Frans: délibérations/décisions). Beide zijn nuttige output. "Geen PV-PDF" ≠ "geen data" — gemeente gebruikt dan model 2. Deliberations.be gebruikt bijna altijd model 2 (uittreksels), enkel Mons en Seneffe hebben volledige PV-PDFs op delib.be.
 - **Herstappe:** only blocked municipality (DNS failure, ~85 residents, no working website)
 - **Windows:** set `$env:PYTHONIOENCODING = "utf-8"` if terminal shows encoding errors
+
+## Document filtering (`document_filters.py`)
+
+Filters scrape output to keep only mandate-relevant documents. Three-layer model, applied in fixed order:
+
+1. **Whitelist** (`WHITELIST_KEYWORDS`) — mandate anchor terms that always protect a file, overriding all other rules. Add terms that unambiguously indicate a council decision on representation or mandate (e.g. `"mandaat"`, `"vertegenwoordiger"`).
+
+2. **Blacklist** (`BLACKLIST_KEYWORDS`, `BLACKLIST_ABBREVIATIONS`, `BLACKLIST_PREFIXES`, `BLACKLIST_SUBSTRINGS`) — single terms sufficient on their own to exclude a file (e.g. `"Agenda"`, `"Reglement"`, `"RUP"`). Only use when the term never appears in mandate-relevant documents.
+
+3. **Compound blacklist** (`COMPOUND_BLACKLIST`) — pairs of terms that together signal a non-mandate context, but are individually too broad to block. Example: `"goedkeuring"` alone is mandate-relevant; `("goedkeuring", "ontwerpakte")` always indicates a notarial deed for road works. Add combinations here when a single-term blacklist entry would cause collateral damage.
+
+**Rule:** whitelist always beats blacklist and compound. Run `uv run python -m unittest tests.test_document_filters` after any change.
+
+**Safety net — `clean_output.ps1`:** applies its own blacklist/whitelist to existing files in `pdfs/`. Run after filter updates or when a scraper didn't filter during download:
+
+```powershell
+.\clean_output.ps1              # dry run
+.\clean_output.ps1 -Delete      # effectief verwijderen
+.\clean_output.ps1 -Delete -LogFile removed.csv
+```
+
+Keep `clean_output.ps1` and `document_filters.py` in sync when adding new filter terms.
 
 ## Adding a new scraper
 

@@ -173,15 +173,27 @@ def haal_mappen(org_key: str) -> list[dict]:
     return mappen
 
 
-def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
+def haal_datum_items(
+    folder_key: str,
+    grensdatum: date,
+    _depth: int = 0,
+    _bezocht: set[str] | None = None,
+) -> Iterator[dict]:
     """Haal datum-items op in een map die op of na grensdatum vallen.
 
     Verwerkt zowel platte structuren (tekst = ISO-datum) als geneste structuren
-    met een tussenliggend jaar-niveau (bijv. Jette: map → jaarmap → sessie).
+    met een tussenliggend jaar-niveau (bijv. Jette: map → jaarmap → sessie)
+    of een extra categorieniveau (bijv. Evere: map → subcategorie → jaar → datum).
 
     Yields:
         Dicts met 'key', 'datum' (date-object) en optioneel 'label'.
     """
+    if _bezocht is None:
+        _bezocht = set()
+    if folder_key in _bezocht:
+        return
+    _bezocht.add(folder_key)
+
     r = _get(f"{BASE_URL}/web/categoryComplete", params={"vipKey": folder_key})
     if not r or r.status_code != 200:
         return
@@ -196,11 +208,15 @@ def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
         gezien.add(bk)
         tekst = el.get_text(strip=True)
 
+        # ── Org-key (O-prefix) altijd overslaan ────────────────────────────
+        if bk.startswith("O"):
+            continue
+
         # ── Jaarmap (bijv. "2024", "2025") → recursief inladen ─────────────
         if re.fullmatch(r"\d{4}", tekst):
             jaar = int(tekst)
             if jaar >= grensdatum.year:
-                yield from haal_datum_items(bk, grensdatum)
+                yield from haal_datum_items(bk, grensdatum, _depth + 1, _bezocht)
             continue
 
         # ── Directe ISO-datum (bijv. "2025-01-29") ─────────────────────────
@@ -230,8 +246,47 @@ def haal_datum_items(folder_key: str, grensdatum: date) -> Iterator[dict]:
                 item_datum = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
                 if item_datum >= grensdatum:
                     yield {"key": bk, "datum": item_datum, "label": tekst}
+                continue
             except ValueError:
                 pass
+
+        # ── Datum in YYYY.MM.DD-formaat (bijv. "Conseil communal of 2024.01.25") ──
+        m = re.search(r"(\d{4})\.(\d{2})\.(\d{2})$", tekst)
+        if m:
+            try:
+                item_datum = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                if item_datum >= grensdatum:
+                    yield {"key": bk, "datum": item_datum, "label": tekst}
+                continue
+            except ValueError:
+                pass
+
+        # ── Datum in DD.MM.YYYY-formaat (bijv. "01.12.2024") ───────────────
+        m = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{4})", tekst)
+        if m:
+            try:
+                item_datum = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+                if item_datum >= grensdatum:
+                    yield {"key": bk, "datum": item_datum, "label": tekst}
+                continue
+            except ValueError:
+                pass
+
+        # ── Datum in DD.MM.YY-formaat (bijv. "25.01.24") ───────────────────
+        m = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{2})", tekst)
+        if m:
+            try:
+                item_datum = date(2000 + int(m.group(3)), int(m.group(2)), int(m.group(1)))
+                if item_datum >= grensdatum:
+                    yield {"key": bk, "datum": item_datum, "label": tekst}
+                continue
+            except ValueError:
+                pass
+
+        # ── Subcategorie (tekst is geen datum/jaar) → recursief inladen ────
+        # Maximaal 2 extra niveaus; _bezocht voorkomt circulaire links.
+        if _depth < 2 and bk not in _bezocht:
+            yield from haal_datum_items(bk, grensdatum, _depth + 1, _bezocht)
 
 
 def haal_publicaties(item_key: str) -> list[dict]:
@@ -336,16 +391,20 @@ def scrape_gemeente(
         "raad voor maatschappelijk welzijn": "cpas",
     }
 
-    mappen = haal_mappen(org_key)
-    if not mappen:
-        logger.warning("Geen mappen gevonden voor %s", gemeente)
-        return 0, 0
+    if org_key.startswith("C"):
+        # Categorie-sleutel: bevat al de gewenste folder, sla mappen-listing over
+        mappen = [{"key": org_key, "naam": gemeente}]
+    else:
+        mappen = haal_mappen(org_key)
+        if not mappen:
+            logger.warning("Geen mappen gevonden voor %s", gemeente)
+            return 0, 0
 
-    if map_filter:
-        zoekterm = map_filter.lower()
-        zoekterm = _NL_NAAR_FR.get(zoekterm, zoekterm)
-        mappen = [m for m in mappen if zoekterm in m["naam"].lower()]
-        logger.info("  Filter '%s' -> %d map(pen) over", map_filter, len(mappen))
+        if map_filter:
+            zoekterm = map_filter.lower()
+            zoekterm = _NL_NAAR_FR.get(zoekterm, zoekterm)
+            mappen = [m for m in mappen if zoekterm in m["naam"].lower()]
+            logger.info("  Filter '%s' -> %d map(pen) over", map_filter, len(mappen))
 
     alle_docs: list[dict] = []
     results: list[DownloadResult] = []
