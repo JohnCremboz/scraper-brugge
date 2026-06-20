@@ -15,7 +15,7 @@ uv run python -m playwright install chromium
 uv run python start.py
 
 # Run tests
-uv run python -m pytest tests/
+uv run python -m unittest discover -s tests
 # or single test
 uv run python -m unittest tests.test_base_scraper.TestBaseScraperHelpers.test_sanitize_filename_blocks_traversal_patterns
 

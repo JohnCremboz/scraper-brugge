@@ -369,16 +369,19 @@ def download_document(
 
     # Skip-existing check op basis van filename_hint — vóór HTTP-request
     # zodat al-gedownloade bestanden geen extra request veroorzaken.
+    # Check zowel met als zonder .pdf extensie zodat de skip-key matcht
+    # ongeacht of de hint al een extensie bevat.
     if filename_hint:
         _hint_clean = sanitize_filename(filename_hint)
-        _hint_path = output_dir / _hint_clean
-        if _hint_path.exists():
-            return DownloadResult(
-                url=full_url,
-                success=True,
-                path=_hint_path,
-                skipped=True,
-            )
+        for _candidate in (_hint_clean, _hint_clean + ".pdf"):
+            _hint_path = output_dir / _candidate
+            if _hint_path.exists():
+                return DownloadResult(
+                    url=full_url,
+                    success=True,
+                    path=_hint_path,
+                    skipped=True,
+                )
 
     try:
         resp = rate_limited_get(session, full_url, config, stream=True, allow_redirects=True)
@@ -722,14 +725,15 @@ def print_summary(
     total = len(results)
     success = sum(1 for r in results if r.success and not r.skipped)
     skipped = sum(1 for r in results if r.skipped)
-    failed = sum(1 for r in results if not r.success)
-    
+    filtered = sum(1 for r in results if r.filtered)
+    failed = sum(1 for r in results if not r.success and not r.filtered)
+
     logger.info(
-        "%s: %d totaal, %d nieuw, %d overgeslagen, %d mislukt",
-        naam, total, success, skipped, failed,
+        "%s: %d totaal, %d nieuw, %d overgeslagen, %d gefilterd, %d mislukt",
+        naam, total, success, skipped, filtered, failed,
     )
-    
+
     if failed > 0:
         for r in results:
-            if not r.success:
+            if not r.success and not r.filtered:
                 logger.warning("  Mislukt: %s — %s", r.url, r.error)
